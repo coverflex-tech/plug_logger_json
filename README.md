@@ -151,7 +151,7 @@ In this example, the `:user_id` is retrieved from `conn.assigns.user.user_id` an
     * request_id,
     * status
 
-  * `warn` / `debug` will log everything from info and:
+  * `warning` / `debug` will log everything from info and:
 
     * client_ip,
     * client_version,

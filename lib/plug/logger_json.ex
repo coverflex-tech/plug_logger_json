@@ -95,6 +95,9 @@ defmodule Plug.LoggerJSON do
   def log(conn, level, start, opts \\ [])
   def log(conn, :error, start, opts), do: log(conn, :info, start, opts)
   def log(conn, :info, start, opts), do: log_message(conn, :info, start, opts)
+  def log(conn, :warning, start, opts), do: log(conn, :debug, start, opts)
+
+  @deprecated "use :warning instead"
   def log(conn, :warn, start, opts), do: log(conn, :debug, start, opts)
 
   def log(conn, :debug, start, opts) do
