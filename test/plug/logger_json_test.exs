@@ -13,7 +13,7 @@ defmodule Plug.LoggerJSONTest do
     plug(Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
       pass: ["*/*"],
-      json_decoder: Poison
+      json_decoder: Jason
     )
 
     plug(:passthrough)
@@ -43,7 +43,7 @@ defmodule Plug.LoggerJSONTest do
     plug(Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
       pass: ["*/*"],
-      json_decoder: Poison
+      json_decoder: Jason
     )
 
     plug(:passthrough)
@@ -61,7 +61,7 @@ defmodule Plug.LoggerJSONTest do
     plug(Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
       pass: ["*/*"],
-      json_decoder: Poison
+      json_decoder: Jason
     )
 
     plug(:passthrough)
@@ -102,7 +102,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["api_version"] == "N/A"
     assert map["client_ip"] == "N/A"
@@ -128,7 +128,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["api_version"] == "N/A"
     assert map["client_ip"] == "N/A"
@@ -154,7 +154,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["client_ip"] == nil
     assert map["client_version"] == nil
@@ -171,7 +171,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["client_ip"] == "209.49.75.165"
     assert map["client_version"] == "ios/1.5.4"
@@ -189,7 +189,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["api_version"] == "N/A"
     assert map["client_ip"] == "N/A"
@@ -215,7 +215,7 @@ defmodule Plug.LoggerJSONTest do
           "user_id" => "a2e684ee-2e5f-4e4d-879a-bb253908eef3"
         }
       }
-      |> Poison.encode!()
+      |> Jason.encode!()
 
     {_conn, message} =
       conn(:post, "/", json)
@@ -225,7 +225,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["api_version"] == "N/A"
     assert map["client_ip"] == "N/A"
@@ -262,7 +262,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["api_version"] == "N/A"
     assert map["client_ip"] == "209.49.75.165"
@@ -287,7 +287,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["client_version"] == "ios/1.5.4"
   end
@@ -303,7 +303,7 @@ defmodule Plug.LoggerJSONTest do
     map =
       message
       |> remove_colors
-      |> Poison.decode!()
+      |> Jason.decode!()
 
     assert map["user_id"] == "123"
     assert map["other_id"] == 456
@@ -318,7 +318,7 @@ defmodule Plug.LoggerJSONTest do
       |> call()
       |> elem(1)
       |> remove_colors()
-      |> Poison.decode!()
+      |> Jason.decode!()
       |> get_in(["params", "user"])
 
     assert user["password"] == "[FILTERED]"
@@ -331,7 +331,7 @@ defmodule Plug.LoggerJSONTest do
       |> call()
       |> elem(1)
       |> remove_colors()
-      |> Poison.decode!()
+      |> Jason.decode!()
       |> get_in(["params"])
 
     assert params["photo"] == %{"content_type" => nil, "filename" => nil, "path" => nil}
@@ -362,7 +362,7 @@ defmodule Plug.LoggerJSONTest do
       error_log =
         message
         |> remove_colors
-        |> Poison.decode!()
+        |> Jason.decode!()
 
       assert error_log["log_type"] == "error"
       assert error_log["message"]

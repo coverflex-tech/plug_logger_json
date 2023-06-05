@@ -8,7 +8,7 @@ A comprehensive JSON logger Plug.
 ## Dependencies
 
 * Plug
-* Poison
+* Jason
 
 ## Elixir & Erlang Support
 
@@ -92,7 +92,7 @@ Do the following:
     plug Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
       pass: ["*/*"],
-      json_decoder: Poison
+      json_decoder: Jason
     ```
 
 ## Error Logging
@@ -106,7 +106,7 @@ In `router.ex` of your Phoenix project or in your plug pipeline:
     ```elixir
     defp handle_errors(%Plug.Conn{status: 500} = conn, %{kind: kind, reason: reason, stack: stacktrace}) do
       Plug.LoggerJSON.log_error(kind, reason, stacktrace)
-      send_resp(conn, 500, Poison.encode!(%{errors: %{detail: "Internal server error"}}))
+      send_resp(conn, 500, Jason.encode!(%{errors: %{detail: "Internal server error"}}))
     end
 
     defp handle_errors(_, _), do: nil
@@ -134,7 +134,7 @@ plug Plug.LoggerJSON,
   extra_attributes_fn: &MyPlug.extra_attributes/1
 ```
 
-In this example, the `:user_id` is retrieved from `conn.assigns.user.user_id` and added to the log if it exists. In the example, any values that are `nil` are filtered from the map. It is a requirement that the value is serialiazable as JSON by the Poison library, otherwise an error will be raised when attempting to encode the value.
+In this example, the `:user_id` is retrieved from `conn.assigns.user.user_id` and added to the log if it exists. In the example, any values that are `nil` are filtered from the map. It is a requirement that the value is serializable as JSON by the Jason library, otherwise an error will be raised when attempting to encode the value.
 
 ## Log Verbosity
 
