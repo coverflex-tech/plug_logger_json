@@ -29,13 +29,13 @@ defmodule PlugLoggerJson.Mixfile do
 
   defp deps do
     [
-      {:credo, "~> 1.0.2", only: [:dev]},
-      {:dialyxir, "~> 0.5.1", only: [:dev]},
-      {:earmark, "~> 1.3.1", only: [:dev]},
-      {:ex_doc, "~> 0.19.3", only: [:dev]},
-      {:excoveralls, "~> 0.10.5", only: [:test]},
-      {:plug, "~> 1.0"},
-      {:poison, "~> 1.5 or ~> 2.0 or ~> 3.0 or ~> 4.0"}
+      {:credo, "~> 1.5.5", only: [:dev]},
+      {:dialyxir, "~> 1.1.0", only: [:dev]},
+      {:earmark, "~> 1.4.14", only: [:dev]},
+      {:ex_doc, "~> 0.23.0", only: [:dev]},
+      {:excoveralls, "~> 0.14.0", only: [:test]},
+      {:plug, "~> 1.11"},
+      {:poison, "~> 5.0"},
     ]
   end
 

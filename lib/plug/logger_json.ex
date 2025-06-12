@@ -53,7 +53,7 @@ defmodule Plug.LoggerJSON do
   In this example, the `:user_id` is retrieved from `conn.assigns.user.user_id`
   and added to the log if it exists. In the example, any values that are `nil`
   are filtered from the map. It is a requirement that the value is
-  serialiazable as JSON by the Poison library, otherwise an error will be raised
+  serialiazable as JSON by the Jason library, otherwise an error will be raised
   when attempting to encode the value.
   """
 
@@ -83,9 +83,13 @@ defmodule Plug.LoggerJSON do
 
   def call(conn, opts) do
     level = Keyword.get(opts, :log, :info)
+    log_request = Keyword.get(opts, :log_request, false)
     start = :os.timestamp()
 
     Conn.register_before_send(conn, fn conn ->
+    if log_request do
+      log(conn, level, nil, opts)
+    end
       :ok = log(conn, level, start, opts)
       conn
     end)
@@ -110,11 +114,22 @@ defmodule Plug.LoggerJSON do
           "message" => Exception.format(kind, reason, stacktrace),
           "request_id" => Logger.metadata()[:request_id]
         }
-        |> Poison.encode!()
+        |> Jason.encode!()
       end)
   end
 
   @spec log_message(Plug.Conn.t(), atom(), time(), opts) :: atom()
+  defp log_message(conn, level, nil, opts) do
+    Logger.log(level, fn ->
+      conn
+      |> basic_logging()
+      |> Map.merge(debug_logging(conn, opts))
+      |> Map.merge(phoenix_attributes(conn))
+      |> Map.merge(extra_attributes(conn, opts))
+      |> Jason.encode!()
+    end)
+  end
+
   defp log_message(conn, level, start, opts) do
     Logger.log(level, fn ->
       conn
@@ -122,8 +137,25 @@ defmodule Plug.LoggerJSON do
       |> Map.merge(debug_logging(conn, opts))
       |> Map.merge(phoenix_attributes(conn))
       |> Map.merge(extra_attributes(conn, opts))
-      |> Poison.encode!()
+      |> Jason.encode!()
     end)
+  end
+
+  defp basic_logging(conn) do
+    req_id = Logger.metadata()[:request_id]
+    req_headers = format_map_list(conn.req_headers)
+
+    log_json = %{
+      "api_version" => Map.get(req_headers, "accept", "N/A"),
+      "date_time" => iso8601(:calendar.now_to_datetime(:os.timestamp())),
+      "log_type" => "http",
+      "method" => conn.method,
+      "path" => conn.request_path,
+      "request_id" => req_id,
+      "status" => conn.status
+    }
+
+    Map.drop(log_json, Application.get_env(:plug_logger_json, :suppressed_keys, []))
   end
 
   defp basic_logging(conn, start) do
