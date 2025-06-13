@@ -44,6 +44,7 @@ The following options can be configured:
 *   `:suppressed_keys` - Keys to suppress from the log. Default: `[]`
 *   `:include_debug_logging` - Whether to include debug logging (client_ip, client_version, and params).  If not set, the defaults are used.  See "Log Verbosity". Default: `nil`
 *   `:should_log_fn` - Function to determine if the request should be logged.  See "Conditional Logging". Default: `fn _conn -> true end`
+*   `:duration_unit` - The unit for duration logging. Can be `:nanoseconds`, `:microseconds`, or `:milliseconds`. Default: `:milliseconds`
 
 Example:
 
@@ -255,6 +256,30 @@ plug Plug.LoggerJSON,
 ```
 
 By using `should_log_fn`, you can implement granular control over which requests are logged, helping you to tailor your logging strategy to meet specific requirements and constraints.
+
+## Duration Units
+
+You can customize the unit used for duration logging by setting the `:duration_unit` option:
+
+```elixir
+# Log duration in nanoseconds (as integer)
+plug Plug.LoggerJSON, duration_unit: :nanoseconds
+
+// nanoseconds
+{"duration": 4670123, ...}
+
+# Log duration in microseconds (as integer)
+plug Plug.LoggerJSON, duration_unit: :microseconds
+
+// microseconds  
+{"duration": 4670, ...}
+
+# Log duration in milliseconds (as float, rounded to 3 decimal places) - default
+plug Plug.LoggerJSON, duration_unit: :milliseconds
+
+// milliseconds
+{"duration": 4.67, ...}
+```
 
 ## Contributing
 
