@@ -72,10 +72,13 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  defmodule MyPlugWithIgnoredPaths do
+  defmodule MyPlugWithConditionalLogging do
     use Plug.Builder
 
-    plug(Plug.LoggerJSON, log: :debug, ignored_paths: ["/health", "/metrics"])
+    plug(Plug.LoggerJSON,
+      log: :debug,
+      should_log_fn: &__MODULE__.should_log_request/1
+    )
 
     plug(Plug.Parsers,
       parsers: [:urlencoded, :multipart, :json],
@@ -86,7 +89,36 @@ defmodule Plug.LoggerJSONTest do
     plug(:passthrough)
 
     defp passthrough(conn, _) do
-      Plug.Conn.send_resp(conn, 200, "Passthrough")
+      # Simulate different responses based on path
+      cond do
+        conn.request_path == "/api/nonexistent" ->
+          Plug.Conn.send_resp(conn, 404, "Not Found")
+
+        conn.request_path == "/internal/status" and conn.assigns[:force_error] ->
+          Plug.Conn.send_resp(conn, 500, "Internal Server Error")
+
+        true ->
+          Plug.Conn.send_resp(conn, 200, "Passthrough")
+      end
+    end
+
+    def should_log_request(conn) do
+      cond do
+        # Skip health checks and monitoring endpoints
+        conn.request_path in ["/health", "/metrics"] -> false
+
+        # Skip successful OPTIONS requests
+        conn.method == "OPTIONS" and conn.status < 400 -> false
+
+        # Always log errors regardless of path
+        conn.status >= 400 -> true
+
+        # Skip internal endpoints that are successful
+        String.starts_with?(conn.request_path, "/internal/") and conn.status < 300 -> false
+
+        # Default: log everything else
+        true -> true
+      end
     end
   end
 
@@ -133,6 +165,11 @@ defmodule Plug.LoggerJSONTest do
   defp make_request_and_get_log(conn, plug \\ MyDebugPlug) do
     {_conn, message} = call(conn, plug)
     message |> remove_colors() |> Jason.decode!()
+  end
+
+  defp make_request_and_get_message(conn, plug) do
+    {_conn, message} = call(conn, plug)
+    message
   end
 
   defp assert_common_log_fields(log_map) do
@@ -344,34 +381,54 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  describe "ignored paths" do
-    test "does not log requests to ignored paths" do
-      {_conn, message} = call(conn(:get, "/health"), MyPlugWithIgnoredPaths)
-
-      # The message should be empty when the path is ignored
+  describe "conditional logging with should_log_fn" do
+    test "does not log requests to health check paths" do
+      message = make_request_and_get_message(conn(:get, "/health"), MyPlugWithConditionalLogging)
       assert message == ""
     end
 
-    test "does not log requests to ignored paths with query parameters" do
-      {_conn, message} = call(conn(:get, "/health?check=all"), MyPlugWithIgnoredPaths)
-
-      # The message should be empty when the path is ignored
+    test "does not log requests to metrics endpoints" do
+      message = make_request_and_get_message(conn(:get, "/metrics"), MyPlugWithConditionalLogging)
       assert message == ""
     end
 
-    test "does not log POST requests to ignored paths" do
-      {_conn, message} =
-        conn(:post, "/metrics", %{some: "data"})
-        |> call(MyPlugWithIgnoredPaths)
-
-      # The message should be empty when the path is ignored
+    test "does not log successful OPTIONS requests" do
+      message = make_request_and_get_message(conn(:options, "/api/users"), MyPlugWithConditionalLogging)
       assert message == ""
     end
 
-    test "logs requests to paths not in ignored list" do
+    test "logs failed OPTIONS requests" do
+      log_map =
+        conn(:options, "/api/nonexistent")
+        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "OPTIONS"
+      assert log_map["path"] == "/api/nonexistent"
+      assert log_map["status"] == 404
+    end
+
+    test "does not log successful requests to internal paths" do
+      message = make_request_and_get_message(conn(:get, "/internal/status"), MyPlugWithConditionalLogging)
+      assert message == ""
+    end
+
+    test "logs failed requests to internal paths" do
+      log_map =
+        conn(:get, "/internal/status")
+        |> assign(:force_error, true)
+        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "GET"
+      assert log_map["path"] == "/internal/status"
+      assert log_map["status"] == 500
+    end
+
+    test "logs requests to regular API paths" do
       log_map =
         conn(:get, "/api/users")
-        |> make_request_and_get_log(MyPlugWithIgnoredPaths)
+        |> make_request_and_get_log(MyPlugWithConditionalLogging)
 
       assert_common_log_fields(log_map)
       assert log_map["method"] == "GET"
@@ -379,27 +436,8 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["status"] == 200
     end
 
-    test "handles empty ignored_paths list" do
-      defmodule MyPlugWithEmptyIgnoredPaths do
-        use Plug.Builder
-        plug(Plug.LoggerJSON, log: :debug, ignored_paths: [])
-        plug(Plug.Parsers, parsers: [:urlencoded, :multipart, :json], pass: ["*/*"], json_decoder: Jason)
-        plug(:passthrough)
-        defp passthrough(conn, _), do: Plug.Conn.send_resp(conn, 200, "Passthrough")
-      end
-
-      log_map =
-        conn(:get, "/health")
-        |> make_request_and_get_log(MyPlugWithEmptyIgnoredPaths)
-
-      assert_common_log_fields(log_map)
-      assert log_map["method"] == "GET"
-      assert log_map["path"] == "/health"
-      assert log_map["status"] == 200
-    end
-
-    test "handles case when ignored_paths is not set" do
-      # This test uses the existing MyDebugPlug which doesn't have ignored_paths
+    test "logs when should_log_fn is not provided" do
+      # Test default behavior (should log everything)
       log_map =
         conn(:get, "/health")
         |> make_request_and_get_log(MyDebugPlug)

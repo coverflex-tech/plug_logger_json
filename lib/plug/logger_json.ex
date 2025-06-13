@@ -23,22 +23,16 @@ defmodule Plug.LoggerJSON do
 
   To use it, just plug it into the desired module.
   plug Plug.LoggerJSON, log: :debug
-  ### Available Options
-
-  * `:log` - The log level at which this plug should log its request info. Default is `:info`.
-  * `:extra_attributes_fn` - Function to call with `conn` to add additional fields to the requests. Default is `nil`. See "Extra Fields" section below.
-  * `:ignored_paths` - List of request paths to exclude from logging. Default is `[]`. See "Ignoring Specific Paths" section below.
-  * `:include_debug_logging` - Boolean to force inclusion of debug fields regardless of log level. Default varies by log level.
-
-  ### Example with All Options
-
-  ```elixir
-  plug Plug.LoggerJSON,
-       log: :debug,
-       extra_attributes_fn: &MyModule.extra_fields/1,
-       ignored_paths: ["/healthcheck"],
-       include_debug_logging: true
-  ```
+  ## Options
+  * `:log` - The log level at which this plug should log its request info.
+  Default is `:info`.
+  * `:extra_attributes_fn` - Function to call with `conn` to add additional
+  fields to the requests. Default is `nil`. Please see "Extra Fields" section
+  for more information.
+  * `:should_log_fn` - Function to call with `conn` to determine if the request
+  should be logged. Should return `true` to log or `false` to skip logging.
+  Default is `nil` (logs all requests). Please see "Conditional Logging" section
+  for more information.
 
   ## Extra Fields
 
@@ -65,6 +59,37 @@ defmodule Plug.LoggerJSON do
   are filtered from the map. It is a requirement that the value is
   serializable as JSON by the Jason library, otherwise an error will be raised
   when attempting to encode the value.
+
+  ## Conditional Logging
+
+  You can control whether requests should be logged by providing a function that
+  receives the connection and returns a boolean:
+
+        def should_log_request(conn) do
+          cond do
+            # Skip health checks and monitoring endpoints
+            conn.request_path in ["/health", "/metrics", "/ping"] -> false
+
+            # Skip successful OPTIONS requests
+            conn.method == "OPTIONS" and conn.status < 400 -> false
+
+            # Always log errors regardless of path
+            conn.status >= 400 -> true
+
+            # Skip internal endpoints that are successful
+            String.starts_with?(conn.request_path, "/internal/") and conn.status < 300 -> false
+
+            # Default: log everything else
+            true -> true
+          end
+        end
+
+        plug Plug.LoggerJSON, log: Logger.level,
+                              should_log_fn: &MyPlug.should_log_request/1
+
+  The function has access to the complete connection struct, including request
+  information (method, path, headers, params) and response information (status,
+  response headers) after the request has been processed.
   """
 
   alias Plug.Conn
@@ -94,29 +119,28 @@ defmodule Plug.LoggerJSON do
   def call(conn, opts) do
     level = Keyword.get(opts, :log, :info)
     log_request = Keyword.get(opts, :log_request, false)
-    ignored_paths = Keyword.get(opts, :ignored_paths, [])
     start = :os.timestamp()
 
-    # Check if the current path should be ignored
-    if should_ignore_path?(conn.request_path, ignored_paths) do
-      conn
-    else
-      Conn.register_before_send(conn, fn conn ->
+    Conn.register_before_send(conn, fn conn ->
+      should_log = should_log_request?(conn, opts)
+
+      if should_log do
         if log_request do
           log(conn, level, nil, opts)
         end
         :ok = log(conn, level, start, opts)
-        conn
-      end)
-    end
+      end
+
+      conn
+    end)
   end
 
-  @spec should_ignore_path?(String.t(), list()) :: boolean()
-  defp should_ignore_path?(_path, []), do: false
-  defp should_ignore_path?(path, ignored_paths) when is_list(ignored_paths) do
-    Enum.any?(ignored_paths, fn ignored_path ->
-      path == ignored_path
-    end)
+  @spec should_log_request?(Plug.Conn.t(), opts) :: boolean()
+  defp should_log_request?(conn, opts) do
+    case Keyword.get(opts, :should_log_fn) do
+      fun when is_function(fun, 1) -> fun.(conn)
+      _ -> true
+    end
   end
 
   @spec log(Plug.Conn.t(), atom(), time(), opts) :: atom() | no_return()
