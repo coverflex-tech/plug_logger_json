@@ -22,19 +22,24 @@ defmodule Plug.LoggerJSON do
   ```
 
   To use it, just plug it into the desired module.
-  plug Plug.LoggerJSON, log: :debug
+  `plug Plug.LoggerJSON, log: :debug`
+
   ## Options
+
   * `:log` - The log level at which this plug should log its request info.
-  Default is `:info`.
+    Default is `:info`.
+  * `:log_request` - When set to true, this plug will log the request
+    details at the moment the connection is established and before any
+    processing begins. Useful for debugging purposes. Default is `false`.
   * `:duration_unit` - The unit for duration logging. Can be `:nanoseconds`,
-  `:microseconds`, or `:milliseconds`. Default is `:milliseconds`.
+    `:microseconds`, or `:milliseconds`. Default is `:milliseconds`.
   * `:extra_attributes_fn` - Function to call with `conn` to add additional
-  fields to the requests. Default is `nil`. Please see "Extra Fields" section
-  for more information.
+    fields to the requests. Default is `nil`. Please see "Extra Fields" section
+    for more information.
   * `:should_log_fn` - Function to call with `conn` to determine if the request
-  should be logged. Should return `true` to log or `false` to skip logging.
-  Default is `nil` (logs all requests). Please see "Conditional Logging" section
-  for more information.
+    should be logged. Should return `true` to log or `false` to skip logging.
+    Default is `nil` (logs all requests). Please see "Conditional Logging" section
+    for more information.
 
   ## Duration Units
 
@@ -109,26 +114,39 @@ defmodule Plug.LoggerJSON do
 
   alias Plug.Conn
 
-  @behaviour Plug
-
   require Logger
 
   @typedoc """
-  Type for a plug option
+  Type for a plug option.
   """
-  @type opts :: binary | tuple | atom | integer | float | [opts] | %{opts => opts}
+  @type opt ::
+          :log
+          | :duration_unit
+          | :extra_attributes_fn
+          | :should_log_fn
+          | :log_request
+          | {:log, atom()}
+          | {:duration_unit, :nanoseconds | :microseconds | :milliseconds}
+          | {:extra_attributes_fn, (Plug.Conn.t() -> map())}
+          | {:should_log_fn, (Plug.Conn.t() -> boolean())}
+          | {:log_request, boolean()}
 
   @typedoc """
-  Type for time
+  Type for a list of plug options.
   """
-  @type time :: {non_neg_integer(), non_neg_integer(), non_neg_integer()}
+  @type opts :: list(opt)
 
-  @spec init(opts) :: opts
+  @typedoc """
+  Type for a timestamp with `{mega_secs, secs, micro_secs}`.
+  """
+  @type os_timestamp :: {non_neg_integer(), non_neg_integer(), non_neg_integer()}
+
+  @spec init(opts()) :: opts()
   def init(opts), do: opts
 
-  @spec call(Plug.Conn.t(), opts) :: Plug.Conn.t()
+  @spec call(Plug.Conn.t(), opts() | atom()) :: Plug.Conn.t()
   def call(conn, level_or_opts) when is_atom(level_or_opts) do
-    call(conn, level: level_or_opts)
+    call(conn, log: level_or_opts)
   end
 
   def call(conn, opts) do
@@ -148,6 +166,7 @@ defmodule Plug.LoggerJSON do
         if log_request do
           log(conn, level, nil, opts)
         end
+
         :ok = log(conn, level, start, opts)
       end
 
@@ -168,17 +187,20 @@ defmodule Plug.LoggerJSON do
         plug_logger_json_level: level
       } ->
         should_log = should_log_request?(conn, opts)
+
         if should_log do
           log(conn, level, start, opts)
         end
+
         :ok
+
       _ ->
         # No logging configuration found, skip
         :ok
     end
   end
 
-  @spec should_log_request?(Plug.Conn.t(), opts) :: boolean()
+  @spec should_log_request?(Plug.Conn.t(), opts()) :: boolean()
   defp should_log_request?(conn, opts) do
     case Keyword.get(opts, :should_log_fn) do
       fun when is_function(fun, 1) -> fun.(conn)
@@ -186,8 +208,9 @@ defmodule Plug.LoggerJSON do
     end
   end
 
-  @spec log(Plug.Conn.t(), atom(), time(), opts) :: atom() | no_return()
+  @spec log(Plug.Conn.t(), atom(), os_timestamp() | nil, opts()) :: :ok | no_return()
   def log(conn, level, start, opts \\ [])
+
   def log(conn, :error, start, opts), do: log(conn, :info, start, opts)
   def log(conn, :info, start, opts), do: log_message(conn, :info, start, opts)
   def log(conn, :warning, start, opts), do: log(conn, :debug, start, opts)
@@ -199,7 +222,7 @@ defmodule Plug.LoggerJSON do
     log_message(conn, :info, start, Keyword.put_new(opts, :include_debug_logging, true))
   end
 
-  @spec log_error(atom(), map(), list()) :: atom()
+  @spec log_error(atom(), map(), list()) :: :ok
   def log_error(kind, reason, stacktrace) do
     _ =
       Logger.log(:error, fn ->
@@ -212,7 +235,7 @@ defmodule Plug.LoggerJSON do
       end)
   end
 
-  @spec log_message(Plug.Conn.t(), atom(), time(), opts) :: atom()
+  @spec log_message(Plug.Conn.t(), atom(), os_timestamp() | nil, opts()) :: :ok
   defp log_message(conn, level, start, opts) do
     Logger.log(level, fn ->
       conn
@@ -224,9 +247,10 @@ defmodule Plug.LoggerJSON do
     end)
   end
 
+  @spec basic_logging(Plug.Conn.t(), os_timestamp() | nil, opts()) :: map()
   defp basic_logging(conn, start, opts) do
     stop = :os.timestamp()
-    duration = :timer.now_diff(stop, start)
+    duration = if start, do: :timer.now_diff(stop, start), else: 0
     req_id = Logger.metadata()[:request_id]
     req_headers = format_map_list(conn.req_headers)
 
@@ -244,7 +268,7 @@ defmodule Plug.LoggerJSON do
     Map.drop(log_json, Application.get_env(:plug_logger_json, :suppressed_keys, []))
   end
 
-  @spec format_duration(non_neg_integer(), opts) :: number()
+  @spec format_duration(non_neg_integer(), opts()) :: number()
   defp format_duration(duration_microseconds, opts) do
     duration_unit = Keyword.get(opts, :duration_unit, :milliseconds)
 
@@ -267,14 +291,15 @@ defmodule Plug.LoggerJSON do
     end
   end
 
+  @spec extra_attributes(Plug.Conn.t(), opts()) :: map()
   defp extra_attributes(conn, opts) do
     case Keyword.get(opts, :extra_attributes_fn) do
-      fun when is_function(fun) -> fun.(conn)
+      fun when is_function(fun, 1) -> fun.(conn)
       _ -> %{}
     end
   end
 
-  @spec client_version(%{String.t() => String.t()}) :: String.t()
+  @spec client_version(map()) :: String.t()
   defp client_version(headers) do
     headers
     |> Map.get("x-client-version", "N/A")
@@ -287,7 +312,7 @@ defmodule Plug.LoggerJSON do
     end
   end
 
-  @spec debug_logging(Plug.Conn.t(), opts) :: map()
+  @spec debug_logging(Plug.Conn.t(), opts()) :: map()
   defp debug_logging(conn, opts) do
     case Keyword.get(opts, :include_debug_logging) do
       true ->
@@ -304,14 +329,14 @@ defmodule Plug.LoggerJSON do
     end
   end
 
-  @spec filter_values(struct(), [binary()]) :: binary()
+  @spec filter_values(map() | struct(), [binary()]) :: map()
   defp filter_values(%{__struct__: mod} = struct, filters) when is_atom(mod) do
     struct
     |> Map.from_struct()
     |> filter_values(filters)
   end
 
-  @spec filter_values(map(), [binary()]) :: [{binary(), any()}]
+  @spec filter_values(map(), [binary()]) :: map()
   defp filter_values(%{} = map, filters) do
     Enum.into(map, %{}, fn {k, v} ->
       if is_binary(k) and k in filters do
@@ -322,7 +347,7 @@ defmodule Plug.LoggerJSON do
     end)
   end
 
-  @spec filter_values([{binary(), any()}], [binary()]) :: [{binary(), any()}]
+  @spec filter_values(list(), [binary()]) :: list()
   defp filter_values(list, filters) when is_list(list) do
     Enum.map(list, &filter_values(&1, filters))
   end
