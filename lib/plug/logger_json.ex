@@ -23,13 +23,22 @@ defmodule Plug.LoggerJSON do
 
   To use it, just plug it into the desired module.
   plug Plug.LoggerJSON, log: :debug
-  ## Options
-  * `:log` - The log level at which this plug should log its request info.
-  Default is `:info`.
-  * `:extra_attributes_fn` - Function to call with `conn` to add additional
-  fields to the requests. Default is `nil`. Please see "Extra Fields" section
-  for more information.
-  * `:ignored_paths` - List of paths to ignore from logging. Default is `[]`.
+  ### Available Options
+
+  * `:log` - The log level at which this plug should log its request info. Default is `:info`.
+  * `:extra_attributes_fn` - Function to call with `conn` to add additional fields to the requests. Default is `nil`. See "Extra Fields" section below.
+  * `:ignored_paths` - List of request paths to exclude from logging. Default is `[]`. See "Ignoring Specific Paths" section below.
+  * `:include_debug_logging` - Boolean to force inclusion of debug fields regardless of log level. Default varies by log level.
+
+  ### Example with All Options
+
+  ```elixir
+  plug Plug.LoggerJSON,
+       log: :debug,
+       extra_attributes_fn: &MyModule.extra_fields/1,
+       ignored_paths: ["/healthcheck"],
+       include_debug_logging: true
+  ```
 
   ## Extra Fields
 

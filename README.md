@@ -95,6 +95,8 @@ Do the following:
       json_decoder: Jason
     ```
 
+**Note:** Path matching is exact - `/health` will not match `/health/check`. Each path you want to ignore must be explicitly listed.
+
 ## Error Logging
 
 In `router.ex` of your Phoenix project or in your plug pipeline:
