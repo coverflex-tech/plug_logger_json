@@ -329,14 +329,11 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  describe "client information extraction" do
-    test "extracts client IP from X-Forwarded-For header" do
+  describe "client information" do
+    test "extracts IP from X-Forwarded-For header" do
       log_map =
-        conn(:get, "/")
-        |> put_req_header("x-forwarded-for", "209.49.75.165")
-        |> put_private(:phoenix_controller, Plug.LoggerJSONTest)
-        |> put_private(:phoenix_action, :show)
-        |> put_private(:phoenix_format, "json")
+        phoenix_conn()
+        |> conn_with_client_info("209.49.75.165")
         |> make_request_and_get_log()
 
       assert_common_log_fields(log_map)
@@ -547,6 +544,23 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["path"] == "/health"
       assert log_map["status"] == 200
+    end
+  end
+
+  describe "request filtering" do
+    @describetag :conditional_logging
+
+    test "skips health check endpoints" do
+      assert test_conditional_logging("/health") == nil
+    end
+
+    test "skips metrics endpoints" do
+      assert test_conditional_logging("/metrics") == nil
+    end
+
+    test "logs API endpoints" do
+      log_map = test_conditional_logging("/api/users", :get, true)
+      assert_request_fields(log_map, "GET", "/api/users", 200)
     end
   end
 
@@ -800,5 +814,57 @@ defmodule Plug.LoggerJSONTest do
       test_fn.(duration)
       log_map
     end
+  end
+
+  def phoenix_conn do
+    conn(:get, "/")
+    |> put_private(:phoenix_controller, Plug.LoggerJSONTest)
+    |> put_private(:phoenix_action, :show)
+    |> put_private(:phoenix_format, "json")
+  end
+
+  def conn_with_client_info(conn, ip) do
+    conn |> put_req_header("x-forwarded-for", ip)
+  end
+
+  def test_conditional_logging(path, method \\ :get, expect_log \\ false) do
+    MyPlugWithConditionalLogging
+    |> build_conn(method, path)
+    |> get_log_output(expect_log)
+  end
+
+  def build_conn(plug, method, path) do
+    conn(method, path) |> call(plug) |> elem(1)
+  end
+
+  def get_log_output(output, expect_log) do
+    message =
+      output
+      |> remove_colors()
+      |> String.trim()
+
+    if expect_log do
+      case message do
+        "" -> assert false, "Expected log but got empty message"
+        _ -> parse_log_lines(message) |> List.first()
+      end
+    else
+      message =
+        output
+        |> remove_colors()
+        |> String.trim()
+
+      case message do
+        "" -> nil
+        _ -> assert false, "Expected no log but got a message"
+      end
+    end
+  end
+
+  def assert_request_fields(log_map, method, path, status) do
+    assert_common_log_fields(log_map)
+    assert log_map["method"] == method
+    assert log_map["path"] == path
+    assert log_map["status"] == status
   end
 end
