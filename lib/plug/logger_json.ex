@@ -129,7 +129,7 @@ defmodule Plug.LoggerJSON do
       |> Map.merge(debug_logging(conn, opts))
       |> Map.merge(phoenix_attributes(conn))
       |> Map.merge(extra_attributes(conn, opts))
-      |> Poison.encode!()
+      |> Jason.encode!()
     end)
   end
 

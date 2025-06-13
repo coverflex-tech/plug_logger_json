@@ -114,7 +114,7 @@ defmodule Plug.LoggerJSONTest do
   # New helper functions for better readability
   defp make_request_and_get_log(conn, plug \\ MyDebugPlug) do
     {_conn, message} = call(conn, plug)
-    message |> remove_colors() |> Poison.decode!()
+    message |> remove_colors() |> Jason.decode!()
   end
 
   defp assert_common_log_fields(log_map) do
@@ -171,7 +171,7 @@ defmodule Plug.LoggerJSONTest do
       }
 
       log_map =
-        conn(:post, "/", Poison.encode!(json_payload))
+        conn(:post, "/", Jason.encode!(json_payload))
         |> put_req_header("content-type", "application/json")
         |> make_request_and_get_log()
 
@@ -317,7 +317,7 @@ defmodule Plug.LoggerJSONTest do
           Logger.flush()
         end)
 
-      log_map = message |> remove_colors() |> Poison.decode!()
+      log_map = message |> remove_colors() |> Jason.decode!()
 
       assert log_map["log_type"] == "error"
       assert log_map["message"] =~ "** (RuntimeError) oops"
