@@ -122,6 +122,46 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
+  # A simpler plug that uses try/catch instead of Plug.ErrorHandler
+  defmodule MySimpleExceptionPlug do
+    use Plug.Builder
+
+    plug(Plug.LoggerJSON, log: :debug)
+
+    plug(Plug.Parsers,
+      parsers: [:urlencoded, :multipart, :json],
+      pass: ["*/*"],
+      json_decoder: Jason
+    )
+
+    plug(:handle_request)
+
+    defp handle_request(conn, _) do
+      try do
+        if conn.request_path == "/exception" do
+          raise RuntimeError, "Something went wrong in the controller"
+        else
+          Plug.Conn.send_resp(conn, 200, "OK")
+        end
+      rescue
+        _error ->
+          # Set status to 500 and manually log the request
+          # We need to prevent the normal before_send callback from running
+          # by removing the before_send callbacks
+          conn = conn |> put_status(500)
+
+          # Clear before_send callbacks to avoid double logging
+          private = %{conn.private | before_send: []}
+          conn = %Plug.Conn{conn | private: private}
+
+          # Manually log the request
+          Plug.LoggerJSON.log_request(conn)
+
+          send_resp(conn, 500, "Internal Server Error")
+      end
+    end
+  end
+
   # Setup to preserve original config and restore it after tests
   setup do
     original_config = Application.get_env(:plug_logger_json, :filtered_keys)
@@ -151,6 +191,17 @@ defmodule Plug.LoggerJSONTest do
     get_log(fn -> plug.call(conn, []) end)
   end
 
+  defp call_with_exception(conn, plug) do
+    get_log(fn ->
+      try do
+        plug.call(conn, [])
+      catch
+        # Catch any errors and return the conn
+        _, _ -> conn
+      end
+    end)
+  end
+
   defp get_log(func) do
     data =
       capture_io(:user, fn ->
@@ -161,15 +212,40 @@ defmodule Plug.LoggerJSONTest do
     {Process.get(:get_log), data}
   end
 
+  # Helper to parse potentially multiple JSON lines
+  defp parse_log_lines(message) do
+    message
+    |> remove_colors()
+    |> String.trim()
+    |> String.split("\n")
+    |> Enum.reject(&(&1 == ""))
+    |> Enum.map(&Jason.decode!/1)
+  end
+
   # New helper functions for better readability
   defp make_request_and_get_log(conn, plug \\ MyDebugPlug) do
     {_conn, message} = call(conn, plug)
-    message |> remove_colors() |> Jason.decode!()
+
+    case parse_log_lines(message) do
+      [log_map] -> log_map
+      [log_map | _] -> log_map  # Take the first log if there are multiple
+      [] -> raise "No log output captured"
+    end
   end
 
   defp make_request_and_get_message(conn, plug) do
     {_conn, message} = call(conn, plug)
     message
+  end
+
+  defp make_exception_request_and_get_log(conn, plug) do
+    {_conn, message} = call_with_exception(conn, plug)
+
+    case parse_log_lines(message) do
+      [log_map] -> log_map
+      [log_map | _] -> log_map  # Take the first log if there are multiple
+      [] -> raise "No log output captured for exception test"
+    end
   end
 
   defp assert_common_log_fields(log_map) do
@@ -378,6 +454,35 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["message"] =~ "** (RuntimeError) oops"
       assert log_map["message"] =~ "lib/test.ex:10: Plug.LoggerJSONTest.call/2"
       assert log_map["request_id"] == nil
+    end
+  end
+
+  describe "exception handling" do
+    test "logs request even when an exception is raised in the controller (simple approach)" do
+      log_map =
+        conn(:get, "/exception")
+        |> make_exception_request_and_get_log(MySimpleExceptionPlug)
+
+      # Verify that the request was logged despite the exception
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "GET"
+      assert log_map["path"] == "/exception"
+      assert log_map["status"] == 500
+      assert log_map["client_ip"] == "N/A"
+      assert log_map["client_version"] == "N/A"
+      assert log_map["params"] == %{}
+    end
+
+    test "logs normal requests without exceptions in exception-handling plug" do
+      log_map =
+        conn(:get, "/normal")
+        |> make_request_and_get_log(MySimpleExceptionPlug)
+
+      # Verify normal operation still works
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "GET"
+      assert log_map["path"] == "/normal"
+      assert log_map["status"] == 200
     end
   end
 

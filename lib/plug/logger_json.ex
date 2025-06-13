@@ -12,8 +12,8 @@ defmodule Plug.LoggerJSON do
     "log_type":        "http",
     "method":          "POST",
     "params":          {
-                         "user":"jkelly",
-                         "password":"[FILTERED]"
+                         "user": "jkelly",
+                         "password": "[FILTERED]"
                        },
     "path":            "/",
     "request_id":      "d90jcl66vp09r8tke3utjsd1pjrg4ln8",
@@ -121,6 +121,11 @@ defmodule Plug.LoggerJSON do
     log_request = Keyword.get(opts, :log_request, false)
     start = :os.timestamp()
 
+    # Store logging info in conn private for access in exception handlers
+    conn = Conn.put_private(conn, :plug_logger_json_opts, opts)
+    conn = Conn.put_private(conn, :plug_logger_json_start, start)
+    conn = Conn.put_private(conn, :plug_logger_json_level, level)
+
     Conn.register_before_send(conn, fn conn ->
       should_log = should_log_request?(conn, opts)
 
@@ -133,6 +138,29 @@ defmodule Plug.LoggerJSON do
 
       conn
     end)
+  end
+
+  @doc """
+  Logs a request manually. This is useful for logging requests in exception handlers
+  where the normal before_send callback might not be called.
+  """
+  @spec log_request(Plug.Conn.t()) :: :ok
+  def log_request(conn) do
+    case conn.private do
+      %{
+        plug_logger_json_opts: opts,
+        plug_logger_json_start: start,
+        plug_logger_json_level: level
+      } ->
+        should_log = should_log_request?(conn, opts)
+        if should_log do
+          log(conn, level, start, opts)
+        end
+        :ok
+      _ ->
+        # No logging configuration found, skip
+        :ok
+    end
   end
 
   @spec should_log_request?(Plug.Conn.t(), opts) :: boolean()
