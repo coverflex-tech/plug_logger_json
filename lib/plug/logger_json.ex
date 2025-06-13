@@ -26,6 +26,8 @@ defmodule Plug.LoggerJSON do
   ## Options
   * `:log` - The log level at which this plug should log its request info.
   Default is `:info`.
+  * `:duration_unit` - The unit for duration logging. Can be `:nanoseconds`,
+  `:microseconds`, or `:milliseconds`. Default is `:milliseconds`.
   * `:extra_attributes_fn` - Function to call with `conn` to add additional
   fields to the requests. Default is `nil`. Please see "Extra Fields" section
   for more information.
@@ -33,6 +35,19 @@ defmodule Plug.LoggerJSON do
   should be logged. Should return `true` to log or `false` to skip logging.
   Default is `nil` (logs all requests). Please see "Conditional Logging" section
   for more information.
+
+  ## Duration Units
+
+  You can customize the unit used for duration logging:
+
+        # Log duration in nanoseconds (as integer)
+        plug Plug.LoggerJSON, duration_unit: :nanoseconds
+
+        # Log duration in microseconds (as integer)
+        plug Plug.LoggerJSON, duration_unit: :microseconds
+
+        # Log duration in milliseconds (as float, rounded to 3 decimal places) - default
+        plug Plug.LoggerJSON, duration_unit: :milliseconds
 
   ## Extra Fields
 
@@ -201,7 +216,7 @@ defmodule Plug.LoggerJSON do
   defp log_message(conn, level, start, opts) do
     Logger.log(level, fn ->
       conn
-      |> basic_logging(start)
+      |> basic_logging(start, opts)
       |> Map.merge(debug_logging(conn, opts))
       |> Map.merge(phoenix_attributes(conn))
       |> Map.merge(extra_attributes(conn, opts))
@@ -209,24 +224,7 @@ defmodule Plug.LoggerJSON do
     end)
   end
 
-  defp basic_logging(conn, nil) do
-    req_id = Logger.metadata()[:request_id]
-    req_headers = format_map_list(conn.req_headers)
-
-    log_json = %{
-      "api_version" => Map.get(req_headers, "accept", "N/A"),
-      "date_time" => iso8601(:calendar.now_to_datetime(:os.timestamp())),
-      "log_type" => "http",
-      "method" => conn.method,
-      "path" => conn.request_path,
-      "request_id" => req_id,
-      "status" => conn.status
-    }
-
-    Map.drop(log_json, Application.get_env(:plug_logger_json, :suppressed_keys, []))
-  end
-
-  defp basic_logging(conn, start) do
+  defp basic_logging(conn, start, opts) do
     stop = :os.timestamp()
     duration = :timer.now_diff(stop, start)
     req_id = Logger.metadata()[:request_id]
@@ -235,7 +233,7 @@ defmodule Plug.LoggerJSON do
     log_json = %{
       "api_version" => Map.get(req_headers, "accept", "N/A"),
       "date_time" => iso8601(:calendar.now_to_datetime(:os.timestamp())),
-      "duration" => Float.round(duration / 1000, 3),
+      "duration" => format_duration(duration, opts),
       "log_type" => "http",
       "method" => conn.method,
       "path" => conn.request_path,
@@ -244,6 +242,29 @@ defmodule Plug.LoggerJSON do
     }
 
     Map.drop(log_json, Application.get_env(:plug_logger_json, :suppressed_keys, []))
+  end
+
+  @spec format_duration(non_neg_integer(), opts) :: number()
+  defp format_duration(duration_microseconds, opts) do
+    duration_unit = Keyword.get(opts, :duration_unit, :milliseconds)
+
+    case duration_unit do
+      :nanoseconds ->
+        # Convert microseconds to nanoseconds (multiply by 1000)
+        duration_microseconds * 1000
+
+      :microseconds ->
+        # Already in microseconds
+        duration_microseconds
+
+      :milliseconds ->
+        # Convert microseconds to milliseconds and round to 3 decimal places
+        Float.round(duration_microseconds / 1000, 3)
+
+      _ ->
+        # Default to milliseconds for invalid values
+        Float.round(duration_microseconds / 1000, 3)
+    end
   end
 
   defp extra_attributes(conn, opts) do

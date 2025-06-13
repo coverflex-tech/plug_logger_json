@@ -2,8 +2,8 @@ defmodule Plug.LoggerJSONTest do
   use ExUnit.Case
   import Plug.Test
   import Plug.Conn
+  import ExUnit.CaptureLog
 
-  import ExUnit.CaptureIO
   require Logger
 
   defmodule MyDebugPlug do
@@ -106,16 +106,12 @@ defmodule Plug.LoggerJSONTest do
       cond do
         # Skip health checks and monitoring endpoints
         conn.request_path in ["/health", "/metrics"] -> false
-
         # Skip successful OPTIONS requests
         conn.method == "OPTIONS" and conn.status < 400 -> false
-
         # Always log errors regardless of path
         conn.status >= 400 -> true
-
         # Skip internal endpoints that are successful
         String.starts_with?(conn.request_path, "/internal/") and conn.status < 300 -> false
-
         # Default: log everything else
         true -> true
       end
@@ -204,7 +200,7 @@ defmodule Plug.LoggerJSONTest do
 
   defp get_log(func) do
     data =
-      capture_io(:user, fn ->
+      capture_log(fn ->
         Process.put(:get_log, func.())
         Logger.flush()
       end)
@@ -228,7 +224,8 @@ defmodule Plug.LoggerJSONTest do
 
     case parse_log_lines(message) do
       [log_map] -> log_map
-      [log_map | _] -> log_map  # Take the first log if there are multiple
+      # Take the first log if there are multiple
+      [log_map | _] -> log_map
       [] -> raise "No log output captured"
     end
   end
@@ -243,7 +240,8 @@ defmodule Plug.LoggerJSONTest do
 
     case parse_log_lines(message) do
       [log_map] -> log_map
-      [log_map | _] -> log_map  # Take the first log if there are multiple
+      # Take the first log if there are multiple
+      [log_map | _] -> log_map
       [] -> raise "No log output captured for exception test"
     end
   end
@@ -438,14 +436,12 @@ defmodule Plug.LoggerJSONTest do
     test "logs runtime errors with stacktrace information" do
       stacktrace = [
         {Plug.LoggerJSONTest, :call, 2, [file: ~c"lib/test.ex", line: 10]},
-        {Plug.Adapters.Cowboy.Handler, :upgrade, 4,
-         [file: ~c"lib/plug/adapters/cowboy/handler.ex", line: 15]}
+        {Plug.Adapters.Cowboy.Handler, :upgrade, 4, [file: ~c"lib/plug/adapters/cowboy/handler.ex", line: 15]}
       ]
 
       message =
-        capture_io(:user, fn ->
+        capture_log(fn ->
           Plug.LoggerJSON.log_error(:error, %RuntimeError{message: "oops"}, stacktrace)
-          Logger.flush()
         end)
 
       log_map = message |> remove_colors() |> Jason.decode!()
@@ -551,6 +547,258 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["path"] == "/health"
       assert log_map["status"] == 200
+    end
+  end
+
+  describe "duration calculation" do
+    test "calculates duration in milliseconds with proper precision" do
+      # Create a test that simulates some processing time
+      log_map =
+        conn(:get, "/")
+        |> make_request_and_get_log()
+
+      # Verify duration is present and is a number
+      assert is_number(log_map["duration"])
+
+      # Duration should be positive (some time elapsed)
+      assert log_map["duration"] > 0
+
+      # Duration should be reasonable (less than 1 second for a simple test)
+      assert log_map["duration"] < 1000
+
+      # Verify it's rounded to 3 decimal places by checking it can be parsed as expected
+      duration_str = Float.to_string(log_map["duration"])
+
+      decimal_places =
+        case String.split(duration_str, ".") do
+          # No decimal places
+          [_integer] -> 0
+          [_integer, decimal] -> String.length(decimal)
+        end
+
+      # Should have at most 3 decimal places
+      assert decimal_places <= 3
+    end
+
+    test "duration is calculated correctly with simulated delay" do
+      # Test with a plug that introduces a small delay
+      defmodule DelayedPlug do
+        use Plug.Builder
+
+        plug(Plug.LoggerJSON, log: :debug)
+        plug(:add_delay)
+        plug(:passthrough)
+
+        defp add_delay(conn, _) do
+          # Small delay to ensure measurable duration
+          # 500ms delay
+          :timer.sleep(500)
+          conn
+        end
+
+        defp passthrough(conn, _) do
+          Plug.Conn.send_resp(conn, 200, "OK")
+        end
+      end
+
+      log_map =
+        conn(:get, "/")
+        |> make_request_and_get_log(DelayedPlug)
+
+      # Duration should be at least 500ms due to our delay
+      assert log_map["duration"] >= 500.0
+
+      # But shouldn't be too much longer (allowing for test execution overhead)
+      assert log_map["duration"] < 502
+    end
+
+    test "duration is present even when request fails" do
+      log_map =
+        conn(:get, "/exception")
+        |> make_exception_request_and_get_log(MySimpleExceptionPlug)
+
+      # Verify duration is still calculated for failed requests
+      assert is_number(log_map["duration"])
+      assert log_map["duration"] > 0
+    end
+  end
+
+  describe "duration unit configuration" do
+    test "logs duration in nanoseconds when duration_unit is :nanoseconds" do
+      conn = conn(:get, "/")
+
+      capture_log(fn ->
+        conn
+        |> Plug.LoggerJSON.call(duration_unit: :nanoseconds)
+        |> send_resp(200, "")
+      end)
+      |> remove_colors()
+      |> decode_log_line()
+      |> with_duration(fn duration ->
+        # Duration should be an integer in nanoseconds
+        assert is_integer(duration)
+        # Should be much larger than microseconds (multiplied by 1000)
+        assert duration > 1000
+      end)
+    end
+
+    test "logs duration in microseconds when duration_unit is :microseconds" do
+      conn = conn(:get, "/")
+
+      capture_log(fn ->
+        conn
+        |> Plug.LoggerJSON.call(duration_unit: :microseconds)
+        |> send_resp(200, "")
+      end)
+      |> remove_colors()
+      |> decode_log_line()
+      |> with_duration(fn duration ->
+        # Duration should be an integer in microseconds
+        assert is_integer(duration)
+        # Should be a reasonable value (greater than 0)
+        assert duration > 0
+      end)
+    end
+
+    test "logs duration in milliseconds when duration_unit is :milliseconds" do
+      conn = conn(:get, "/")
+
+      capture_log(fn ->
+        conn
+        |> Plug.LoggerJSON.call(duration_unit: :milliseconds)
+        |> send_resp(200, "")
+      end)
+      |> remove_colors()
+      |> decode_log_line()
+      |> with_duration(fn duration ->
+        # Duration should be a float in milliseconds
+        assert is_float(duration)
+        # Should be a reasonable value
+        assert duration > 0.0
+      end)
+    end
+
+    test "defaults to milliseconds when duration_unit is not specified" do
+      conn = conn(:get, "/")
+
+      capture_log(fn ->
+        conn
+        |> Plug.LoggerJSON.call([])
+        |> send_resp(200, "")
+      end)
+      # Add this line to remove ANSI color codes
+      |> remove_colors()
+      |> decode_log_line()
+      |> with_duration(fn duration ->
+        # Should default to float milliseconds
+        assert is_float(duration)
+        assert duration > 0.0
+      end)
+    end
+
+    test "defaults to milliseconds when duration_unit is invalid" do
+      conn = conn(:get, "/")
+
+      capture_log(fn ->
+        conn
+        |> Plug.LoggerJSON.call(duration_unit: :invalid_unit)
+        |> send_resp(200, "")
+      end)
+      |> remove_colors()
+      |> decode_log_line()
+      |> with_duration(fn duration ->
+        # Should fallback to float milliseconds
+        assert is_float(duration)
+        assert duration > 0.0
+      end)
+    end
+
+    test "duration precision is maintained for milliseconds" do
+      conn = conn(:get, "/")
+
+      capture_log(fn ->
+        conn
+        |> Plug.LoggerJSON.call(duration_unit: :milliseconds)
+        |> send_resp(200, "")
+      end)
+      |> remove_colors()
+      |> decode_log_line()
+      |> with_duration(fn duration ->
+        # Should be a float
+        assert is_float(duration)
+
+        # Convert to string to check decimal places
+        duration_str = Float.to_string(duration)
+
+        # Should have at most 3 decimal places (due to Float.round(x, 3))
+        case String.split(duration_str, ".") do
+          [_integer_part, decimal_part] ->
+            assert String.length(decimal_part) <= 3
+
+          [_integer_part] ->
+            # No decimal part is also valid
+            :ok
+        end
+      end)
+    end
+
+    test "duration units produce different value types" do
+      # Test nanoseconds
+      nano_duration =
+        capture_log(fn ->
+          conn(:get, "/")
+          |> Plug.LoggerJSON.call(duration_unit: :nanoseconds)
+          |> send_resp(200, "")
+        end)
+        |> remove_colors()
+        |> decode_log_line()
+        |> Map.get("duration")
+
+      # Test microseconds
+      micro_duration =
+        capture_log(fn ->
+          conn(:get, "/")
+          |> Plug.LoggerJSON.call(duration_unit: :microseconds)
+          |> send_resp(200, "")
+        end)
+        |> remove_colors()
+        |> decode_log_line()
+        |> Map.get("duration")
+
+      # Test milliseconds
+      milli_duration =
+        capture_log(fn ->
+          conn(:get, "/")
+          |> Plug.LoggerJSON.call(duration_unit: :milliseconds)
+          |> send_resp(200, "")
+        end)
+        |> remove_colors()
+        |> decode_log_line()
+        |> Map.get("duration")
+
+      # Verify types
+      assert is_integer(nano_duration)
+      assert is_integer(micro_duration)
+      assert is_float(milli_duration)
+
+      # Verify relative magnitudes (nanoseconds should be largest)
+      assert nano_duration > micro_duration
+      assert micro_duration > trunc(milli_duration)
+    end
+
+    defp decode_log_line(log_output) do
+      log_output
+      |> String.trim()
+      |> String.split("\n")
+      |> List.last()
+      |> Jason.decode!()
+    end
+
+    defp with_duration(log_map, test_fn) do
+      duration = Map.get(log_map, "duration")
+      assert duration != nil, "Duration should be present in log"
+      test_fn.(duration)
+      log_map
     end
   end
 end
