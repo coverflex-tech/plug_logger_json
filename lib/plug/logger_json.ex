@@ -122,17 +122,6 @@ defmodule Plug.LoggerJSON do
   end
 
   @spec log_message(Plug.Conn.t(), atom(), time(), opts) :: atom()
-  defp log_message(conn, level, nil, opts) do
-    Logger.log(level, fn ->
-      conn
-      |> basic_logging()
-      |> Map.merge(debug_logging(conn, opts))
-      |> Map.merge(phoenix_attributes(conn))
-      |> Map.merge(extra_attributes(conn, opts))
-      |> Jason.encode!()
-    end)
-  end
-
   defp log_message(conn, level, start, opts) do
     Logger.log(level, fn ->
       conn
@@ -144,7 +133,7 @@ defmodule Plug.LoggerJSON do
     end)
   end
 
-  defp basic_logging(conn) do
+  defp basic_logging(conn, nil) do
     req_id = Logger.metadata()[:request_id]
     req_headers = format_map_list(conn.req_headers)
 
