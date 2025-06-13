@@ -72,6 +72,24 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
+  defmodule MyPlugWithIgnoredPaths do
+    use Plug.Builder
+
+    plug(Plug.LoggerJSON, log: :debug, ignored_paths: ["/health", "/metrics"])
+
+    plug(Plug.Parsers,
+      parsers: [:urlencoded, :multipart, :json],
+      pass: ["*/*"],
+      json_decoder: Jason
+    )
+
+    plug(:passthrough)
+
+    defp passthrough(conn, _) do
+      Plug.Conn.send_resp(conn, 200, "Passthrough")
+    end
+  end
+
   # Setup to preserve original config and restore it after tests
   setup do
     original_config = Application.get_env(:plug_logger_json, :filtered_keys)
@@ -323,6 +341,73 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["message"] =~ "** (RuntimeError) oops"
       assert log_map["message"] =~ "lib/test.ex:10: Plug.LoggerJSONTest.call/2"
       assert log_map["request_id"] == nil
+    end
+  end
+
+  describe "ignored paths" do
+    test "does not log requests to ignored paths" do
+      {_conn, message} = call(conn(:get, "/health"), MyPlugWithIgnoredPaths)
+
+      # The message should be empty when the path is ignored
+      assert message == ""
+    end
+
+    test "does not log requests to ignored paths with query parameters" do
+      {_conn, message} = call(conn(:get, "/health?check=all"), MyPlugWithIgnoredPaths)
+
+      # The message should be empty when the path is ignored
+      assert message == ""
+    end
+
+    test "does not log POST requests to ignored paths" do
+      {_conn, message} =
+        conn(:post, "/metrics", %{some: "data"})
+        |> call(MyPlugWithIgnoredPaths)
+
+      # The message should be empty when the path is ignored
+      assert message == ""
+    end
+
+    test "logs requests to paths not in ignored list" do
+      log_map =
+        conn(:get, "/api/users")
+        |> make_request_and_get_log(MyPlugWithIgnoredPaths)
+
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "GET"
+      assert log_map["path"] == "/api/users"
+      assert log_map["status"] == 200
+    end
+
+    test "handles empty ignored_paths list" do
+      defmodule MyPlugWithEmptyIgnoredPaths do
+        use Plug.Builder
+        plug(Plug.LoggerJSON, log: :debug, ignored_paths: [])
+        plug(Plug.Parsers, parsers: [:urlencoded, :multipart, :json], pass: ["*/*"], json_decoder: Jason)
+        plug(:passthrough)
+        defp passthrough(conn, _), do: Plug.Conn.send_resp(conn, 200, "Passthrough")
+      end
+
+      log_map =
+        conn(:get, "/health")
+        |> make_request_and_get_log(MyPlugWithEmptyIgnoredPaths)
+
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "GET"
+      assert log_map["path"] == "/health"
+      assert log_map["status"] == 200
+    end
+
+    test "handles case when ignored_paths is not set" do
+      # This test uses the existing MyDebugPlug which doesn't have ignored_paths
+      log_map =
+        conn(:get, "/health")
+        |> make_request_and_get_log(MyDebugPlug)
+
+      assert_common_log_fields(log_map)
+      assert log_map["method"] == "GET"
+      assert log_map["path"] == "/health"
+      assert log_map["status"] == 200
     end
   end
 end

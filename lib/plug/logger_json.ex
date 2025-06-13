@@ -29,6 +29,7 @@ defmodule Plug.LoggerJSON do
   * `:extra_attributes_fn` - Function to call with `conn` to add additional
   fields to the requests. Default is `nil`. Please see "Extra Fields" section
   for more information.
+  * `:ignored_paths` - List of paths to ignore from logging. Default is `[]`.
 
   ## Extra Fields
 
@@ -84,14 +85,28 @@ defmodule Plug.LoggerJSON do
   def call(conn, opts) do
     level = Keyword.get(opts, :log, :info)
     log_request = Keyword.get(opts, :log_request, false)
+    ignored_paths = Keyword.get(opts, :ignored_paths, [])
     start = :os.timestamp()
 
-    Conn.register_before_send(conn, fn conn ->
-    if log_request do
-      log(conn, level, nil, opts)
-    end
-      :ok = log(conn, level, start, opts)
+    # Check if the current path should be ignored
+    if should_ignore_path?(conn.request_path, ignored_paths) do
       conn
+    else
+      Conn.register_before_send(conn, fn conn ->
+        if log_request do
+          log(conn, level, nil, opts)
+        end
+        :ok = log(conn, level, start, opts)
+        conn
+      end)
+    end
+  end
+
+  @spec should_ignore_path?(String.t(), list()) :: boolean()
+  defp should_ignore_path?(_path, []), do: false
+  defp should_ignore_path?(path, ignored_paths) when is_list(ignored_paths) do
+    Enum.any?(ignored_paths, fn ignored_path ->
+      path == ignored_path
     end)
   end
 
