@@ -53,7 +53,7 @@ defmodule Plug.LoggerJSON do
   In this example, the `:user_id` is retrieved from `conn.assigns.user.user_id`
   and added to the log if it exists. In the example, any values that are `nil`
   are filtered from the map. It is a requirement that the value is
-  serialiazable as JSON by the Jason library, otherwise an error will be raised
+  serialiazable as JSON by the Poison library, otherwise an error will be raised
   when attempting to encode the value.
   """
 
@@ -114,7 +114,7 @@ defmodule Plug.LoggerJSON do
           "message" => Exception.format(kind, reason, stacktrace),
           "request_id" => Logger.metadata()[:request_id]
         }
-        |> Jason.encode!()
+        |> Poison.encode!()
       end)
   end
 
@@ -126,7 +126,7 @@ defmodule Plug.LoggerJSON do
       |> Map.merge(debug_logging(conn, opts))
       |> Map.merge(phoenix_attributes(conn))
       |> Map.merge(extra_attributes(conn, opts))
-      |> Jason.encode!()
+      |> Poison.encode!()
     end)
   end
 
@@ -137,7 +137,7 @@ defmodule Plug.LoggerJSON do
       |> Map.merge(debug_logging(conn, opts))
       |> Map.merge(phoenix_attributes(conn))
       |> Map.merge(extra_attributes(conn, opts))
-      |> Jason.encode!()
+      |> Poison.encode!()
     end)
   end
 
