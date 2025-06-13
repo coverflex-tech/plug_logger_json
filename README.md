@@ -16,7 +16,7 @@ The support policy is to support the last 2 major versions of Erlang and the thr
 
 ## Installation
 
-1. add plug_logger_json to your list of dependencies in `mix.exs`:
+1. Add `plug_logger_json` to your list of dependencies in `mix.exs`:
 
    ```elixir
    def deps do
@@ -24,7 +24,7 @@ The support policy is to support the last 2 major versions of Erlang and the thr
    end
    ```
 
-2. ensure plug_logger_json is started before your application (Skip if using Elixir 1.4 or greater):
+2. Ensure `plug_logger_json` is started before your application (Skip if using Elixir 1.4 or greater):
 
    ```elixir
    def application do
@@ -32,10 +32,30 @@ The support policy is to support the last 2 major versions of Erlang and the thr
    end
    ```
 
-3. Replace `Plug.Logger` with either:
+3. Replace `Plug.Logger` with `Plug.LoggerJSON, opts` in your plug pipeline (in `endpoint.ex` for Phoenix apps).  See "Configuration Options" for available `opts`.
 
-   * `Plug.LoggerJSON, log: Logger.level`,
-   * `Plug.LoggerJSON, log: Logger.level, extra_attributes_fn: &MyPlug.extra_attributes/1` in your plug pipeline (in `endpoint.ex` for Phoenix apps),
+## Configuration Options
+
+The following options can be configured:
+
+*   `:log` - Logger level (`Logger.level`). Default: `:info`
+*   `:extra_attributes_fn` - Function to call to get extra attributes to log.  It should accept a `Plug.Conn` and return a map.  See "Extra Attributes". Default: `nil`
+*   `:filtered_keys` - Keys to filter from params and headers. Default: `[]`
+*   `:suppressed_keys` - Keys to suppress from the log. Default: `[]`
+*   `:include_debug_logging` - Whether to include debug logging (client_ip, client_version, and params).  If not set, the defaults are used.  See "Log Verbosity". Default: `nil`
+*   `:should_log_fn` - Function to determine if the request should be logged.  See "Conditional Logging". Default: `fn _conn -> true end`
+
+Example:
+
+```elixir
+plug Plug.LoggerJSON,
+  log: Logger.level,
+  extra_attributes_fn: &MyPlug.extra_attributes/1,
+  filtered_keys: ["password", "authorization"],
+  suppressed_keys: ["api_version", "log_type"],
+  include_debug_logging: true,
+  should_log_fn: &MyPlug.should_log/1
+```
 
 ## Recommended Setup
 
@@ -94,8 +114,6 @@ Do the following:
       pass: ["*/*"],
       json_decoder: Jason
     ```
-
-**Note:** Path matching is exact - `/health` will not match `/health/check`. Each path you want to ignore must be explicitly listed.
 
 ## Error Logging
 
@@ -172,6 +190,71 @@ plug Plug.LoggerJSON,
   log: Logger.level,
   include_debug_logging: true
 ```
+
+## Conditional Logging
+
+The `should_log_fn` option allows you to conditionally enable or disable logging for specific requests. This is particularly useful in scenarios where you want to exclude certain types of requests from your logs to reduce noise or protect sensitive information.
+
+*   **Callback Signature**: The function should accept a `Plug.Conn` struct as its only argument and return a boolean value.
+*   **Return Value**: Return `true` to log the request, and `false` to skip logging.
+
+Here are some example use cases:
+
+### 1. Excluding Health Check Endpoints
+
+To avoid logging health check requests (e.g., `/health`), you can configure `should_log_fn` as follows:
+
+```elixir
+defmodule MyApp.Plugs do
+  def should_log(conn) do
+    case conn.request_path do
+      "/health" -> false
+      _ -> true
+    end
+  end
+end
+
+plug Plug.LoggerJSON,
+  log: :info,
+  should_log_fn: &MyApp.Plugs.should_log/1
+```
+
+### 2. Logging Based on Request Type
+
+You might want to log only certain types of requests, such as `POST` requests:
+
+```elixir
+defmodule MyApp.Plugs do
+  def should_log(conn) do
+    conn.request_method == "POST"
+  end
+end
+
+plug Plug.LoggerJSON,
+  log: :info,
+  should_log_fn: &MyApp.Plugs.should_log/1
+```
+
+### 3. Excluding Specific Clients
+
+If you want to prevent logging for requests from a particular client (identified by IP address), you can configure `should_log_fn` like this:
+
+```elixir
+defmodule MyApp.Plugs do
+  def should_log(conn) do
+    case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
+      {"192.168.1.100", _} -> false
+      _ -> true
+    end
+  end
+end
+
+plug Plug.LoggerJSON,
+  log: :info,
+  should_log_fn: &MyApp.Plugs.should_log/1
+```
+
+By using `should_log_fn`, you can implement granular control over which requests are logged, helping you to tailor your logging strategy to meet specific requirements and constraints.
 
 ## Contributing
 
