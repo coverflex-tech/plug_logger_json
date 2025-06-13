@@ -11,7 +11,7 @@ defmodule PlugLoggerJson.Mixfile do
       ],
       description: "Elixir Plug that formats http request logs as json",
       docs: [extras: ["README.md"]],
-      elixir: "~> 1.3",
+      elixir: "~> 1.15",
       homepage_url: "https://github.com/bleacherreport/plug_logger_json",
       name: "Plug Logger JSON",
       package: package(),
@@ -31,8 +31,12 @@ defmodule PlugLoggerJson.Mixfile do
     [
       {:credo, "~> 1.7", only: [:dev]},
       {:dialyxir, "~> 1.4", only: [:dev]},
-      {:earmark, "~> 1.4.14", only: [:dev]},
-      {:ex_doc, "~> 0.38", only: [:dev]},
+      {:earmark, "~> 1.4", only: [:dev]},
+      {:earmark_parser, "~> 1.4.39", only: [:dev]},
+      {:ex_doc, "~> 0.38", only: :dev, runtime: false, warn_if_outdated: true},
+      {:makeup, "~> 1.2", only: :dev, runtime: false},
+      {:makeup_elixir, ">= 0.0.0", only: :dev, runtime: false},
+      {:makeup_html, ">= 0.0.0", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: [:test]},
       {:plug, "~> 1.11"},
       {:jason, "~> 1.4"}
