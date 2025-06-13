@@ -151,7 +151,6 @@ defmodule Plug.LoggerJSON do
 
   def call(conn, opts) do
     level = Keyword.get(opts, :log, :info)
-    log_request = Keyword.get(opts, :log_request, false)
     start = :os.timestamp()
 
     # Store logging info in conn private for access in exception handlers
@@ -159,15 +158,13 @@ defmodule Plug.LoggerJSON do
     conn = Conn.put_private(conn, :plug_logger_json_start, start)
     conn = Conn.put_private(conn, :plug_logger_json_level, level)
 
+    if should_log_request?(conn, opts) do
+      log(conn, level, start, opts)
+    end
+
     Conn.register_before_send(conn, fn conn ->
-      should_log = should_log_request?(conn, opts)
-
-      if should_log do
-        if log_request do
-          log(conn, level, nil, opts)
-        end
-
-        :ok = log(conn, level, start, opts)
+      if should_log_request?(conn, opts) do
+        log(conn, level, start, opts)
       end
 
       conn
@@ -203,8 +200,14 @@ defmodule Plug.LoggerJSON do
   @spec should_log_request?(Plug.Conn.t(), opts()) :: boolean()
   defp should_log_request?(conn, opts) do
     case Keyword.get(opts, :should_log_fn) do
-      fun when is_function(fun, 1) -> fun.(conn)
-      _ -> true
+      fun when is_function(fun, 1) ->
+        fun.(conn)
+
+      _ ->
+        # Default: only log responses (when status is set)
+        # During request phase, conn.status is nil
+        # During response phase (before_send), conn.status is set
+        not is_nil(conn.status)
     end
   end
 
@@ -254,11 +257,15 @@ defmodule Plug.LoggerJSON do
     req_id = Logger.metadata()[:request_id]
     req_headers = format_map_list(conn.req_headers)
 
+    # Determine phase based on whether we have a status (response) or not (request)
+    phase = if conn.status, do: "response", else: "request"
+
     log_json = %{
       "api_version" => Map.get(req_headers, "accept", "N/A"),
       "date_time" => iso8601(:calendar.now_to_datetime(:os.timestamp())),
       "duration" => format_duration(duration, opts),
       "log_type" => "http",
+      "phase" => phase,
       "method" => conn.method,
       "path" => conn.request_path,
       "request_id" => req_id,

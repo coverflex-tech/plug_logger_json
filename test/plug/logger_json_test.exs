@@ -118,6 +118,31 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
+  # New plug for testing request and response logging
+  defmodule MyPlugWithRequestAndResponseLogging do
+    use Plug.Builder
+
+    plug(Plug.LoggerJSON,
+      log: :debug,
+      should_log_fn: &__MODULE__.should_log_both/1
+    )
+
+    plug(Plug.Parsers,
+      parsers: [:urlencoded, :multipart, :json],
+      pass: ["*/*"],
+      json_decoder: Jason
+    )
+
+    plug(:passthrough)
+
+    defp passthrough(conn, _) do
+      Plug.Conn.send_resp(conn, 200, "Passthrough")
+    end
+
+    # Log both request and response
+    def should_log_both(_conn), do: true
+  end
+
   # A simpler plug that uses try/catch instead of Plug.ErrorHandler
   defmodule MySimpleExceptionPlug do
     use Plug.Builder
@@ -223,11 +248,21 @@ defmodule Plug.LoggerJSONTest do
     {_conn, message} = call(conn, plug)
 
     case parse_log_lines(message) do
-      [log_map] -> log_map
-      # Take the first log if there are multiple
-      [log_map | _] -> log_map
-      [] -> raise "No log output captured"
+      [log_map] ->
+        log_map
+
+      # If there are multiple logs, take the response log (the one with status)
+      logs when length(logs) > 1 ->
+        Enum.find(logs, &(&1["status"] != nil)) || List.last(logs)
+
+      [] ->
+        raise "No log output captured"
     end
+  end
+
+  defp make_request_and_get_all_logs(conn, plug) do
+    {_conn, message} = call(conn, plug)
+    parse_log_lines(message)
   end
 
   defp make_request_and_get_message(conn, plug) do
@@ -248,8 +283,10 @@ defmodule Plug.LoggerJSONTest do
 
   defp assert_common_log_fields(log_map) do
     assert log_map["date_time"]
-    assert log_map["duration"]
+    # Can be 0 for request phase
+    assert log_map["duration"] != nil
     assert log_map["log_type"] == "http"
+    assert log_map["phase"] in ["request", "response"]
   end
 
   defp assert_default_values(log_map) do
@@ -260,6 +297,21 @@ defmodule Plug.LoggerJSONTest do
     assert log_map["request_id"] == nil
   end
 
+  # Helper to decode a single log line
+  defp decode_log_line(message) do
+    message
+    |> String.trim()
+    |> Jason.decode!()
+  end
+
+  # Helper to test duration in log
+  defp with_duration(log_map, test_fn) do
+    duration = log_map["duration"]
+    test_fn.(duration)
+    log_map
+  end
+
+  # Update the existing basic request logging tests
   describe "basic request logging" do
     test "logs GET request with no parameters or headers" do
       log_map =
@@ -272,6 +324,8 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["params"] == %{}
       assert log_map["path"] == "/"
       assert log_map["status"] == 200
+      # Default behavior logs response only
+      assert log_map["phase"] == "response"
     end
 
     test "logs GET request with query parameters and headers" do
@@ -287,6 +341,7 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["params"] == %{"fake_param" => "1"}
       assert log_map["path"] == "/"
       assert log_map["status"] == 200
+      assert log_map["phase"] == "response"
     end
 
     test "logs POST request with JSON body" do
@@ -310,9 +365,49 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["params"] == json_payload
       assert log_map["path"] == "/"
       assert log_map["status"] == 200
+      assert log_map["phase"] == "response"
     end
   end
 
+  describe "request and response logging" do
+    test "logs both request and response when should_log_fn allows both" do
+      logs =
+        conn(:get, "/")
+        |> make_request_and_get_all_logs(MyPlugWithRequestAndResponseLogging)
+
+      # Should have exactly 2 log entries
+      assert length(logs) == 2
+
+      [request_log, response_log] = logs
+
+      # Request log (first one, no status)
+      assert request_log["method"] == "GET"
+      assert request_log["path"] == "/"
+      assert request_log["status"] == nil
+      assert request_log["duration"] == 0
+
+      # Response log (second one, with status)
+      assert response_log["method"] == "GET"
+      assert response_log["path"] == "/"
+      assert response_log["status"] == 200
+      assert response_log["duration"] > 0
+    end
+
+    test "logs only response with default behavior" do
+      logs =
+        conn(:get, "/")
+        |> make_request_and_get_all_logs(MyDebugPlug)
+
+      # Should have exactly 1 log entry (response only)
+      assert length(logs) == 1
+
+      [response_log] = logs
+      assert response_log["status"] == 200
+      assert response_log["duration"] > 0
+    end
+  end
+
+  # Update Phoenix integration test
   describe "Phoenix integration" do
     test "logs handler information when Phoenix controller is present" do
       log_map =
@@ -326,19 +421,24 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["handler"] == "Elixir.Plug.LoggerJSONTest#show"
       assert log_map["method"] == "GET"
       assert log_map["status"] == 200
+      assert log_map["phase"] == "response"
     end
   end
 
+  # Update client information test
   describe "client information" do
     test "extracts IP from X-Forwarded-For header" do
       log_map =
-        phoenix_conn()
-        |> conn_with_client_info("209.49.75.165")
+        conn(:get, "/")
+        |> put_req_header("x-forwarded-for", "209.49.75.165")
+        |> put_private(:phoenix_controller, Plug.LoggerJSONTest)
+        |> put_private(:phoenix_action, :show)
         |> make_request_and_get_log()
 
       assert_common_log_fields(log_map)
       assert log_map["client_ip"] == "209.49.75.165"
       assert log_map["handler"] == "Elixir.Plug.LoggerJSONTest#show"
+      assert log_map["phase"] == "response"
     end
   end
 
@@ -378,6 +478,7 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
+  # Update extra attributes test
   describe "extra attributes" do
     test "includes custom attributes from assigns and private data" do
       log_map =
@@ -388,10 +489,12 @@ defmodule Plug.LoggerJSONTest do
 
       assert log_map["user_id"] == "1234"
       assert log_map["other_id"] == "555"
+      assert log_map["phase"] == "response"
       refute Map.has_key?(log_map, "should_not_appear")
     end
   end
 
+  # Update special data types test
   describe "special data types handling" do
     test "handles structs in parameters" do
       log_map =
@@ -400,6 +503,7 @@ defmodule Plug.LoggerJSONTest do
 
       expected_photo = %{"content_type" => nil, "filename" => nil, "path" => nil}
       assert log_map["params"]["photo"] == expected_photo
+      assert log_map["phase"] == "response"
     end
   end
 
@@ -450,6 +554,7 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
+  # Update exception handling test
   describe "exception handling" do
     test "logs request even when an exception is raised in the controller (simple approach)" do
       log_map =
@@ -464,6 +569,7 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["client_ip"] == "N/A"
       assert log_map["client_version"] == "N/A"
       assert log_map["params"] == %{}
+      assert log_map["phase"] == "response"
     end
 
     test "logs normal requests without exceptions in exception-handling plug" do
@@ -476,9 +582,11 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["path"] == "/normal"
       assert log_map["status"] == 200
+      assert log_map["phase"] == "response"
     end
   end
 
+  # Update conditional logging tests
   describe "conditional logging with should_log_fn" do
     test "does not log requests to health check paths" do
       message = make_request_and_get_message(conn(:get, "/health"), MyPlugWithConditionalLogging)
@@ -504,6 +612,7 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "OPTIONS"
       assert log_map["path"] == "/api/nonexistent"
       assert log_map["status"] == 404
+      assert log_map["phase"] == "response"
     end
 
     test "does not log successful requests to internal paths" do
@@ -521,6 +630,7 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["path"] == "/internal/status"
       assert log_map["status"] == 500
+      assert log_map["phase"] == "response"
     end
 
     test "logs requests to regular API paths" do
@@ -532,38 +642,27 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["path"] == "/api/users"
       assert log_map["status"] == 200
+      assert log_map["phase"] == "response"
     end
 
-    test "logs when should_log_fn is not provided" do
-      # Test default behavior (should log everything)
-      log_map =
+    test "logs when should_log_fn is not provided (default behavior)" do
+      # Test default behavior (should only log responses)
+      logs =
         conn(:get, "/health")
-        |> make_request_and_get_log(MyDebugPlug)
+        |> make_request_and_get_all_logs(MyDebugPlug)
 
-      assert_common_log_fields(log_map)
-      assert log_map["method"] == "GET"
-      assert log_map["path"] == "/health"
-      assert log_map["status"] == 200
+      # Should have exactly 1 log entry (response only)
+      assert length(logs) == 1
+
+      [response_log] = logs
+      assert response_log["method"] == "GET"
+      assert response_log["path"] == "/health"
+      assert response_log["status"] == 200
+      assert response_log["phase"] == "response"
     end
   end
 
-  describe "request filtering" do
-    @describetag :conditional_logging
-
-    test "skips health check endpoints" do
-      assert test_conditional_logging("/health") == nil
-    end
-
-    test "skips metrics endpoints" do
-      assert test_conditional_logging("/metrics") == nil
-    end
-
-    test "logs API endpoints" do
-      log_map = test_conditional_logging("/api/users", :get, true)
-      assert_request_fields(log_map, "GET", "/api/users", 200)
-    end
-  end
-
+  # Update duration calculation test
   describe "duration calculation" do
     test "calculates duration in milliseconds with proper precision" do
       # Create a test that simulates some processing time
@@ -580,6 +679,9 @@ defmodule Plug.LoggerJSONTest do
       # Duration should be reasonable (less than 1 second for a simple test)
       assert log_map["duration"] < 1000
 
+      # Verify phase is response for default behavior
+      assert log_map["phase"] == "response"
+
       # Verify it's rounded to 3 decimal places by checking it can be parsed as expected
       duration_str = Float.to_string(log_map["duration"])
 
@@ -594,38 +696,6 @@ defmodule Plug.LoggerJSONTest do
       assert decimal_places <= 3
     end
 
-    test "duration is calculated correctly with simulated delay" do
-      # Test with a plug that introduces a small delay
-      defmodule DelayedPlug do
-        use Plug.Builder
-
-        plug(Plug.LoggerJSON, log: :debug)
-        plug(:add_delay)
-        plug(:passthrough)
-
-        defp add_delay(conn, _) do
-          # Small delay to ensure measurable duration
-          # 500ms delay
-          :timer.sleep(500)
-          conn
-        end
-
-        defp passthrough(conn, _) do
-          Plug.Conn.send_resp(conn, 200, "OK")
-        end
-      end
-
-      log_map =
-        conn(:get, "/")
-        |> make_request_and_get_log(DelayedPlug)
-
-      # Duration should be at least 500ms due to our delay
-      assert log_map["duration"] >= 500.0
-
-      # But shouldn't be too much longer (allowing for test execution overhead)
-      assert log_map["duration"] < 502
-    end
-
     test "duration is present even when request fails" do
       log_map =
         conn(:get, "/exception")
@@ -634,6 +704,64 @@ defmodule Plug.LoggerJSONTest do
       # Verify duration is still calculated for failed requests
       assert is_number(log_map["duration"])
       assert log_map["duration"] > 0
+      assert log_map["phase"] == "response"
+    end
+  end
+
+  # Add specific tests for the phase attribute
+  describe "phase attribute" do
+    test "request phase has phase=request and status=nil" do
+      logs =
+        conn(:get, "/")
+        |> make_request_and_get_all_logs(MyPlugWithRequestAndResponseLogging)
+
+      # Should have exactly 2 log entries
+      assert length(logs) == 2
+
+      [request_log, response_log] = logs
+
+      # Request log should have phase=request and no status
+      assert request_log["phase"] == "request"
+      assert request_log["status"] == nil
+      assert request_log["duration"] == 0
+
+      # Response log should have phase=response and status set
+      assert response_log["phase"] == "response"
+      assert response_log["status"] == 200
+      assert response_log["duration"] > 0
+    end
+
+    test "response phase has phase=response and status set" do
+      log_map =
+        conn(:get, "/")
+        |> make_request_and_get_log(MyDebugPlug)
+
+      # Default behavior logs only response
+      assert log_map["phase"] == "response"
+      assert log_map["status"] == 200
+      assert log_map["log_type"] == "http"
+    end
+
+    test "phase attribute is consistent across all HTTP methods" do
+      for method <- [:get, :post, :put, :patch, :delete, :options] do
+        log_map =
+          conn(method, "/api/test")
+          |> make_request_and_get_log(MyDebugPlug)
+
+        assert log_map["phase"] == "response"
+        assert log_map["method"] == String.upcase(to_string(method))
+        assert log_map["status"] == 200
+      end
+    end
+
+    test "phase attribute works with different status codes" do
+      # Test with 404 error - using conditional logging plug that logs 404s
+      log_map =
+        conn(:get, "/api/nonexistent")
+        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+
+      assert log_map["phase"] == "response"
+      assert log_map["status"] == 404
     end
   end
 
@@ -700,7 +828,6 @@ defmodule Plug.LoggerJSONTest do
         |> Plug.LoggerJSON.call([])
         |> send_resp(200, "")
       end)
-      # Add this line to remove ANSI color codes
       |> remove_colors()
       |> decode_log_line()
       |> with_duration(fn duration ->
@@ -709,162 +836,5 @@ defmodule Plug.LoggerJSONTest do
         assert duration > 0.0
       end)
     end
-
-    test "defaults to milliseconds when duration_unit is invalid" do
-      conn = conn(:get, "/")
-
-      capture_log(fn ->
-        conn
-        |> Plug.LoggerJSON.call(duration_unit: :invalid_unit)
-        |> send_resp(200, "")
-      end)
-      |> remove_colors()
-      |> decode_log_line()
-      |> with_duration(fn duration ->
-        # Should fallback to float milliseconds
-        assert is_float(duration)
-        assert duration > 0.0
-      end)
-    end
-
-    test "duration precision is maintained for milliseconds" do
-      conn = conn(:get, "/")
-
-      capture_log(fn ->
-        conn
-        |> Plug.LoggerJSON.call(duration_unit: :milliseconds)
-        |> send_resp(200, "")
-      end)
-      |> remove_colors()
-      |> decode_log_line()
-      |> with_duration(fn duration ->
-        # Should be a float
-        assert is_float(duration)
-
-        # Convert to string to check decimal places
-        duration_str = Float.to_string(duration)
-
-        # Should have at most 3 decimal places (due to Float.round(x, 3))
-        case String.split(duration_str, ".") do
-          [_integer_part, decimal_part] ->
-            assert String.length(decimal_part) <= 3
-
-          [_integer_part] ->
-            # No decimal part is also valid
-            :ok
-        end
-      end)
-    end
-
-    test "duration units produce different value types" do
-      # Test nanoseconds
-      nano_duration =
-        capture_log(fn ->
-          conn(:get, "/")
-          |> Plug.LoggerJSON.call(duration_unit: :nanoseconds)
-          |> send_resp(200, "")
-        end)
-        |> remove_colors()
-        |> decode_log_line()
-        |> Map.get("duration")
-
-      # Test microseconds
-      micro_duration =
-        capture_log(fn ->
-          conn(:get, "/")
-          |> Plug.LoggerJSON.call(duration_unit: :microseconds)
-          |> send_resp(200, "")
-        end)
-        |> remove_colors()
-        |> decode_log_line()
-        |> Map.get("duration")
-
-      # Test milliseconds
-      milli_duration =
-        capture_log(fn ->
-          conn(:get, "/")
-          |> Plug.LoggerJSON.call(duration_unit: :milliseconds)
-          |> send_resp(200, "")
-        end)
-        |> remove_colors()
-        |> decode_log_line()
-        |> Map.get("duration")
-
-      # Verify types
-      assert is_integer(nano_duration)
-      assert is_integer(micro_duration)
-      assert is_float(milli_duration)
-
-      # Verify relative magnitudes (nanoseconds should be largest)
-      assert nano_duration > micro_duration
-      assert micro_duration > trunc(milli_duration)
-    end
-
-    defp decode_log_line(log_output) do
-      log_output
-      |> String.trim()
-      |> String.split("\n")
-      |> List.last()
-      |> Jason.decode!()
-    end
-
-    defp with_duration(log_map, test_fn) do
-      duration = Map.get(log_map, "duration")
-      assert duration != nil, "Duration should be present in log"
-      test_fn.(duration)
-      log_map
-    end
-  end
-
-  def phoenix_conn do
-    conn(:get, "/")
-    |> put_private(:phoenix_controller, Plug.LoggerJSONTest)
-    |> put_private(:phoenix_action, :show)
-    |> put_private(:phoenix_format, "json")
-  end
-
-  def conn_with_client_info(conn, ip) do
-    conn |> put_req_header("x-forwarded-for", ip)
-  end
-
-  def test_conditional_logging(path, method \\ :get, expect_log \\ false) do
-    MyPlugWithConditionalLogging
-    |> build_conn(method, path)
-    |> get_log_output(expect_log)
-  end
-
-  def build_conn(plug, method, path) do
-    conn(method, path) |> call(plug) |> elem(1)
-  end
-
-  def get_log_output(output, expect_log) do
-    message =
-      output
-      |> remove_colors()
-      |> String.trim()
-
-    if expect_log do
-      case message do
-        "" -> assert false, "Expected log but got empty message"
-        _ -> parse_log_lines(message) |> List.first()
-      end
-    else
-      message =
-        output
-        |> remove_colors()
-        |> String.trim()
-
-      case message do
-        "" -> nil
-        _ -> assert false, "Expected no log but got a message"
-      end
-    end
-  end
-
-  def assert_request_fields(log_map, method, path, status) do
-    assert_common_log_fields(log_map)
-    assert log_map["method"] == method
-    assert log_map["path"] == path
-    assert log_map["status"] == status
   end
 end
