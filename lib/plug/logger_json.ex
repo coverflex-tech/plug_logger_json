@@ -28,17 +28,18 @@ defmodule Plug.LoggerJSON do
 
   * `:log` - The log level at which this plug should log its request info.
     Default is `:info`.
-  * `:log_request` - When set to true, this plug will log the request
-    details at the moment the connection is established and before any
-    processing begins. Useful for debugging purposes. Default is `false`.
   * `:duration_unit` - The unit for duration logging. Can be `:nanoseconds`,
     `:microseconds`, or `:milliseconds`. Default is `:milliseconds`.
   * `:extra_attributes_fn` - Function to call with `conn` to add additional
     fields to the requests. Default is `nil`. Please see "Extra Fields" section
     for more information.
-  * `:should_log_fn` - Function to call with `conn` to determine if the request
+  * `:should_log_request_fn` - Function to call with `conn` to determine if the request
     should be logged. Should return `true` to log or `false` to skip logging.
-    Default is `nil` (logs all requests). Please see "Conditional Logging" section
+    Default is `nil` (no request logging). Please see "Conditional Logging" section
+    for more information.
+  * `:should_log_response_fn` - Function to call with `conn` to determine if the response
+    should be logged. Should return `true` to log or `false` to skip logging.
+    Default is `nil` (logs all responses). Please see "Conditional Logging" section
     for more information.
 
   ## Duration Units
@@ -82,34 +83,45 @@ defmodule Plug.LoggerJSON do
 
   ## Conditional Logging
 
-  You can control whether requests should be logged by providing a function that
-  receives the connection and returns a boolean:
+  You can control whether requests and responses should be logged by providing separate
+  functions for each phase:
 
+        # Control request logging
         def should_log_request(conn) do
-          cond do
-            # Skip health checks and monitoring endpoints
-            conn.request_path in ["/health", "/metrics", "/ping"] -> false
-
-            # Skip successful OPTIONS requests
-            conn.method == "OPTIONS" and conn.status < 400 -> false
-
-            # Always log errors regardless of path
-            conn.status >= 400 -> true
-
-            # Skip internal endpoints that are successful
-            String.starts_with?(conn.request_path, "/internal/") and conn.status < 300 -> false
-
-            # Default: log everything else
-            true -> true
-          end
+          # Only log requests for specific paths
+          conn.request_path in ["/api", "/v1"]
         end
 
-        plug Plug.LoggerJSON, log: Logger.level,
-                              should_log_fn: &MyPlug.should_log_request/1
+        # Control response logging
+        def should_log_response(conn) do
+          # Log all responses except health checks
+          conn.request_path not in ["/health", "/metrics"]
+        end
 
-  The function has access to the complete connection struct, including request
+        plug Plug.LoggerJSON,
+          log: :debug,
+          should_log_request_fn: &MyPlug.should_log_request/1,
+          should_log_response_fn: &MyPlug.should_log_response/1
+
+  The functions have access to the complete connection struct, including request
   information (method, path, headers, params) and response information (status,
   response headers) after the request has been processed.
+
+  You can also use anonymous functions for simple cases:
+
+        plug Plug.LoggerJSON,
+          log: :debug,
+          should_log_request_fn: &(&1.request_path in ["/api", "/v1"]),
+          should_log_response_fn: &(&1.request_path not in ["/health", "/metrics"])
+
+  Or share common logic between both functions:
+
+        defp should_log_path?(conn, allowed_paths) do
+          conn.request_path in allowed_paths
+        end
+
+        def should_log_request(conn), do: should_log_path?(conn, ["/api", "/v1"])
+        def should_log_response(conn), do: should_log_path?(conn, ["/api", "/v1", "/health"])
   """
 
   alias Plug.Conn
@@ -123,13 +135,13 @@ defmodule Plug.LoggerJSON do
           :log
           | :duration_unit
           | :extra_attributes_fn
-          | :should_log_fn
-          | :log_request
+          | :should_log_request_fn
+          | :should_log_response_fn
           | {:log, atom()}
           | {:duration_unit, :nanoseconds | :microseconds | :milliseconds}
           | {:extra_attributes_fn, (Plug.Conn.t() -> map())}
-          | {:should_log_fn, (Plug.Conn.t() -> boolean())}
-          | {:log_request, boolean()}
+          | {:should_log_request_fn, (Plug.Conn.t() -> boolean())}
+          | {:should_log_response_fn, (Plug.Conn.t() -> boolean())}
 
   @typedoc """
   Type for a list of plug options.
@@ -163,7 +175,7 @@ defmodule Plug.LoggerJSON do
     end
 
     Conn.register_before_send(conn, fn conn ->
-      if should_log_request?(conn, opts) do
+      if should_log_response?(conn, opts) do
         log(conn, level, start, opts)
       end
 
@@ -183,7 +195,7 @@ defmodule Plug.LoggerJSON do
         plug_logger_json_start: start,
         plug_logger_json_level: level
       } ->
-        should_log = should_log_request?(conn, opts)
+        should_log = should_log_response?(conn, opts)
 
         if should_log do
           log(conn, level, start, opts)
@@ -199,15 +211,25 @@ defmodule Plug.LoggerJSON do
 
   @spec should_log_request?(Plug.Conn.t(), opts()) :: boolean()
   defp should_log_request?(conn, opts) do
-    case Keyword.get(opts, :should_log_fn) do
+    case Keyword.get(opts, :should_log_request_fn) do
       fun when is_function(fun, 1) ->
         fun.(conn)
 
       _ ->
-        # Default: only log responses (when status is set)
-        # During request phase, conn.status is nil
-        # During response phase (before_send), conn.status is set
-        not is_nil(conn.status)
+        # Default: no request logging
+        false
+    end
+  end
+
+  @spec should_log_response?(Plug.Conn.t(), opts()) :: boolean()
+  defp should_log_response?(conn, opts) do
+    case Keyword.get(opts, :should_log_response_fn) do
+      fun when is_function(fun, 1) ->
+        fun.(conn)
+
+      _ ->
+        # Default: log all responses
+        true
     end
   end
 

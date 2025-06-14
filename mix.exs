@@ -24,11 +24,12 @@ defmodule PlugLoggerJson.Mixfile do
   end
 
   def application do
-    [applications: [:logger, :plug]]
+    [applications: [:logger, :plug, :jason]]
   end
 
   defp deps do
     [
+      {:jason, "~> 1.4", runtime: true},
       {:credo, "~> 1.7", only: [:dev]},
       {:dialyxir, "~> 1.4", only: [:dev]},
       {:earmark, "~> 1.4", only: [:dev]},
@@ -38,8 +39,7 @@ defmodule PlugLoggerJson.Mixfile do
       {:makeup_elixir, ">= 0.0.0", only: :dev, runtime: false},
       {:makeup_html, ">= 0.0.0", only: :dev, runtime: false},
       {:excoveralls, "~> 0.18", only: [:test]},
-      {:plug, "~> 1.11"},
-      {:jason, "~> 1.4"}
+      {:plug, "~> 1.18"}
     ]
   end
 
