@@ -43,7 +43,8 @@ The following options can be configured:
 *   `:filtered_keys` - Keys to filter from params and headers. Default: `[]`
 *   `:suppressed_keys` - Keys to suppress from the log. Default: `[]`
 *   `:include_debug_logging` - Whether to include debug logging (client_ip, client_version, and params).  If not set, the defaults are used.  See "Log Verbosity". Default: `nil`
-*   `:should_log_fn` - Function to determine if the request should be logged.  See "Conditional Logging". Default: `fn _conn -> true end`
+*   `:should_log_request_fn` - Function to determine if the request should be logged. See "Conditional Logging". Default: `nil`
+*   `:should_log_response_fn` - Function to determine if the response should be logged. See "Conditional Logging". Default: `nil`
 *   `:duration_unit` - The unit for duration logging. Can be `:nanoseconds`, `:microseconds`, or `:milliseconds`. Default: `:milliseconds`
 
 Example:
@@ -55,8 +56,44 @@ plug Plug.LoggerJSON,
   filtered_keys: ["password", "authorization"],
   suppressed_keys: ["api_version", "log_type"],
   include_debug_logging: true,
-  should_log_fn: &MyPlug.should_log/1
+  should_log_request_fn: &MyPlug.should_log_request/1,
+  should_log_response_fn: &MyPlug.should_log_response/1,
+  duration_unit: :milliseconds
 ```
+
+## Log Format
+
+The log entries are in JSON format and include the following fields:
+
+```json
+{
+  "api_version":     "N/A",
+  "client_ip":       "23.235.46.37",
+  "client_version":  "ios/1.6.7",
+  "date_time":       "2016-05-31T18:00:13Z",
+  "duration":        4.670,
+  "handler":         "fronts#index",
+  "log_type":        "http",
+  "method":          "POST",
+  "params":          {
+    "user": "jkelly",
+    "password": "[FILTERED]"
+  },
+  "path":            "/",
+  "phase":           "request",
+  "request_id":      "d90jcl66vp09r8tke3utjsd1pjrg4ln8",
+  "status":          "200"
+}
+```
+
+The `phase` field indicates whether the log entry represents a request or response:
+* `"request"` - Log entry for the initial request
+* `"response"` - Log entry for the final response
+
+The `duration` field can be configured to use different units:
+* `:nanoseconds` - Returns an integer value (e.g., `4670123`)
+* `:microseconds` - Returns an integer value (e.g., `4670`)
+* `:milliseconds` - Returns a float value rounded to 3 decimal places (e.g., `4.670`)
 
 ## Recommended Setup
 
@@ -194,68 +231,48 @@ plug Plug.LoggerJSON,
 
 ## Conditional Logging
 
-The `should_log_fn` option allows you to conditionally enable or disable logging for specific requests. This is particularly useful in scenarios where you want to exclude certain types of requests from your logs to reduce noise or protect sensitive information.
-
-*   **Callback Signature**: The function should accept a `Plug.Conn` struct as its only argument and return a boolean value.
-*   **Return Value**: Return `true` to log the request, and `false` to skip logging.
-
-Here are some example use cases:
-
-### 1. Excluding Health Check Endpoints
-
-To avoid logging health check requests (e.g., `/health`), you can configure `should_log_fn` as follows:
+You can control whether requests and responses should be logged by providing separate functions for each phase:
 
 ```elixir
 defmodule MyApp.Plugs do
-  def should_log(conn) do
-    case conn.request_path do
-      "/health" -> false
-      _ -> true
-    end
+  def should_log_request(conn) do
+    # Only log requests for specific paths
+    conn.request_path in ["/api", "/v1"]
+  end
+
+  def should_log_response(conn) do
+    # Log all responses except health checks
+    conn.request_path not in ["/health", "/metrics"]
   end
 end
 
 plug Plug.LoggerJSON,
-  log: :info,
-  should_log_fn: &MyApp.Plugs.should_log/1
+  log: :debug,
+  should_log_request_fn: &MyApp.Plugs.should_log_request/1,
+  should_log_response_fn: &MyApp.Plugs.should_log_response/1
 ```
 
-### 2. Logging Based on Request Type
+The functions have access to the complete connection struct, including request information (method, path, headers, params) and response information (status, response headers) after the request has been processed.
 
-You might want to log only certain types of requests, such as `POST` requests:
+You can also use anonymous functions for simple cases:
 
 ```elixir
-defmodule MyApp.Plugs do
-  def should_log(conn) do
-    conn.request_method == "POST"
-  end
-end
-
 plug Plug.LoggerJSON,
-  log: :info,
-  should_log_fn: &MyApp.Plugs.should_log/1
+  log: :debug,
+  should_log_request_fn: &(&1.request_path in ["/api", "/v1"]),
+  should_log_response_fn: &(&1.request_path not in ["/health", "/metrics"])
 ```
 
-### 3. Excluding Specific Clients
-
-If you want to prevent logging for requests from a particular client (identified by IP address), you can configure `should_log_fn` like this:
+Or share common logic between both functions:
 
 ```elixir
-defmodule MyApp.Plugs do
-  def should_log(conn) do
-    case Plug.Conn.get_req_header(conn, "x-forwarded-for") do
-      {"192.168.1.100", _} -> false
-      _ -> true
-    end
-  end
+defp should_log_path?(conn, allowed_paths) do
+  conn.request_path in allowed_paths
 end
 
-plug Plug.LoggerJSON,
-  log: :info,
-  should_log_fn: &MyApp.Plugs.should_log/1
+def should_log_request(conn), do: should_log_path?(conn, ["/api", "/v1"])
+def should_log_response(conn), do: should_log_path?(conn, ["/api", "/v1", "/health"])
 ```
-
-By using `should_log_fn`, you can implement granular control over which requests are logged, helping you to tailor your logging strategy to meet specific requirements and constraints.
 
 ## Duration Units
 
