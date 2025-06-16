@@ -12,6 +12,7 @@ defmodule PlugLoggerJson.Mixfile do
       description: "Elixir Plug that formats http request logs as json",
       docs: [extras: ["README.md"]],
       elixir: "~> 1.15",
+      elixirc_paths: elixirc_paths(Mix.env()),
       homepage_url: "https://github.com/bleacherreport/plug_logger_json",
       name: "Plug Logger JSON",
       package: package(),
@@ -22,6 +23,9 @@ defmodule PlugLoggerJson.Mixfile do
       version: "0.9.0"
     ]
   end
+
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
 
   def application do
     [applications: [:logger, :plug, :jason]]
