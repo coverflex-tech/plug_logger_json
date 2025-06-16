@@ -172,15 +172,18 @@ defmodule Plug.LoggerJSON do
 
     # Log request phase if enabled
     if should_log_request?(conn, opts) do
-      log(conn, level, start, opts)
+      conn
+      |> Conn.put_private(:phase, "request")
+      |> log(level, start, opts)
     end
 
     # Register before_send callback for response phase
     Conn.register_before_send(conn, fn conn ->
       if should_log_response?(conn, opts) do
-        # Mark that we're in the before_send callback
-        conn = Conn.put_private(conn, :plug_logger_json_before_send, true)
-        log(conn, level, start, opts)
+        :ok =
+          conn
+          |> Conn.put_private(:phase, "response")
+          |> log(level, start, opts)
       end
 
       conn
@@ -203,8 +206,9 @@ defmodule Plug.LoggerJSON do
 
         if should_log do
           # Mark that we're in the response phase since this is being called directly
-          conn = Conn.put_private(conn, :plug_logger_json_before_send, true)
-          log(conn, level, start, opts)
+          conn
+          |> Conn.put_private(:phase, "response")
+          |> log(level, start, opts)
         end
 
         :ok
@@ -286,15 +290,12 @@ defmodule Plug.LoggerJSON do
     req_id = Logger.metadata()[:request_id]
     req_headers = format_map_list(conn.req_headers)
 
-    # Determine phase based on whether we're in the before_send callback
-    phase = if conn.private[:plug_logger_json_before_send], do: "response", else: "request"
-
     log_json = %{
       "api_version" => Map.get(req_headers, "accept", "N/A"),
       "date_time" => iso8601(:calendar.now_to_datetime(:os.timestamp())),
       "duration" => format_duration(duration, opts),
       "log_type" => "http",
-      "phase" => phase,
+      "phase" => conn.private[:phase],
       "method" => conn.method,
       "path" => conn.request_path,
       "request_id" => req_id,
