@@ -7,13 +7,13 @@ defmodule Plug.LoggerJSONTest do
   require Logger
 
   alias PlugTestHelpers.{
-    MyDebugPlug,
-    MyInfoPlug,
-    MyInfoPlugWithIncludeDebugLogging,
-    MyPlugWithConditionalLogging,
-    MyPlugWithRequestAndResponseLogging,
-    MySimpleExceptionPlug,
-    MyPlugWithSeparateLogging
+    DebugPlug,
+    InfoPlug,
+    InfoWithDebugPlug,
+    ConditionalLoggingPlug,
+    RequestResponseLoggingPlug,
+    ExceptionHandlingPlug,
+    SeparateLoggingPlug
   }
 
   # Setup to preserve original config and restore it after tests
@@ -75,7 +75,7 @@ defmodule Plug.LoggerJSONTest do
   end
 
   # New helper functions for better readability
-  defp make_request_and_get_log(conn, plug \\ MyDebugPlug) do
+  defp make_request_and_get_log(conn, plug \\ DebugPlug) do
     {_conn, message} = call(conn, plug)
 
     case parse_log_lines(message) do
@@ -207,7 +207,7 @@ defmodule Plug.LoggerJSONTest do
     test "logs both request and response when should_log_fn allows both" do
       logs =
         conn(:get, "/")
-        |> make_request_and_get_all_logs(MyPlugWithRequestAndResponseLogging)
+        |> make_request_and_get_all_logs(RequestResponseLoggingPlug)
 
       # Should have exactly 2 log entries
       assert length(logs) == 2
@@ -230,7 +230,7 @@ defmodule Plug.LoggerJSONTest do
     test "logs only response with default behavior" do
       logs =
         conn(:get, "/")
-        |> make_request_and_get_all_logs(MyDebugPlug)
+        |> make_request_and_get_all_logs(DebugPlug)
 
       # Should have exactly 1 log entry (response only)
       assert length(logs) == 1
@@ -379,7 +379,7 @@ defmodule Plug.LoggerJSONTest do
         conn(:get, "/", fake_param: "1")
         |> put_req_header("x-forwarded-for", "209.49.75.165")
         |> put_req_header("x-client-version", "ios/1.5.4")
-        |> make_request_and_get_log(MyInfoPlug)
+        |> make_request_and_get_log(InfoPlug)
 
       assert log_map["client_ip"] == nil
       assert log_map["client_version"] == nil
@@ -391,7 +391,7 @@ defmodule Plug.LoggerJSONTest do
         conn(:get, "/", fake_param: "1")
         |> put_req_header("x-forwarded-for", "209.49.75.165")
         |> put_req_header("x-client-version", "ios/1.5.4")
-        |> make_request_and_get_log(MyInfoPlugWithIncludeDebugLogging)
+        |> make_request_and_get_log(InfoWithDebugPlug)
 
       assert log_map["client_ip"] == "209.49.75.165"
       assert log_map["client_version"] == "ios/1.5.4"
@@ -427,7 +427,7 @@ defmodule Plug.LoggerJSONTest do
     test "logs request even when an exception is raised in the controller (simple approach)" do
       log_map =
         conn(:get, "/exception")
-        |> make_exception_request_and_get_log(MySimpleExceptionPlug)
+        |> make_exception_request_and_get_log(ExceptionHandlingPlug)
 
       # Verify that the request was logged despite the exception
       assert_common_log_fields(log_map)
@@ -443,7 +443,7 @@ defmodule Plug.LoggerJSONTest do
     test "logs normal requests without exceptions in exception-handling plug" do
       log_map =
         conn(:get, "/normal")
-        |> make_request_and_get_log(MySimpleExceptionPlug)
+        |> make_request_and_get_log(ExceptionHandlingPlug)
 
       # Verify normal operation still works
       assert_common_log_fields(log_map)
@@ -457,29 +457,29 @@ defmodule Plug.LoggerJSONTest do
   # Update conditional logging tests
   describe "conditional logging with should_log_fn" do
     test "does not log requests to health check paths" do
-      message = make_request_and_get_message(conn(:get, "/health"), MyPlugWithConditionalLogging)
+      message = make_request_and_get_message(conn(:get, "/health"), ConditionalLoggingPlug)
       assert message == ""
     end
 
     test "does not log requests to metrics endpoints" do
-      message = make_request_and_get_message(conn(:get, "/metrics"), MyPlugWithConditionalLogging)
+      message = make_request_and_get_message(conn(:get, "/metrics"), ConditionalLoggingPlug)
       assert message == ""
     end
 
     test "does not log successful OPTIONS requests" do
-      message = make_request_and_get_message(conn(:options, "/api/users"), MyPlugWithConditionalLogging)
+      message = make_request_and_get_message(conn(:options, "/api/users"), ConditionalLoggingPlug)
       assert message == "" || String.contains?(message, "\"status\":200") || String.contains?(message, "\"phase\":\"request\"")
     end
 
     test "does not log successful requests to internal paths" do
-      message = make_request_and_get_message(conn(:get, "/internal/status"), MyPlugWithConditionalLogging)
+      message = make_request_and_get_message(conn(:get, "/internal/status"), ConditionalLoggingPlug)
       assert message == "" || String.contains?(message, "\"status\":200") || String.contains?(message, "\"phase\":\"request\"")
     end
 
     test "logs failed OPTIONS requests" do
       log_map =
         conn(:options, "/api/nonexistent")
-        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+        |> make_request_and_get_log(ConditionalLoggingPlug)
 
       assert_common_log_fields(log_map)
       assert log_map["method"] == "OPTIONS"
@@ -492,7 +492,7 @@ defmodule Plug.LoggerJSONTest do
       log_map =
         conn(:get, "/internal/status")
         |> assign(:force_error, true)
-        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+        |> make_request_and_get_log(ConditionalLoggingPlug)
 
       assert_common_log_fields(log_map)
       assert log_map["method"] == "GET"
@@ -504,7 +504,7 @@ defmodule Plug.LoggerJSONTest do
     test "logs requests to regular API paths" do
       log_map =
         conn(:get, "/api/users")
-        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+        |> make_request_and_get_log(ConditionalLoggingPlug)
 
       assert_common_log_fields(log_map)
       assert log_map["method"] == "GET"
@@ -517,7 +517,7 @@ defmodule Plug.LoggerJSONTest do
       # Test default behavior (should only log responses)
       logs =
         conn(:get, "/health")
-        |> make_request_and_get_all_logs(MyDebugPlug)
+        |> make_request_and_get_all_logs(DebugPlug)
 
       # Should have exactly 1 log entry (response only)
       assert length(logs) == 1
@@ -567,7 +567,7 @@ defmodule Plug.LoggerJSONTest do
     test "duration is present even when request fails" do
       log_map =
         conn(:get, "/exception")
-        |> make_exception_request_and_get_log(MySimpleExceptionPlug)
+        |> make_exception_request_and_get_log(ExceptionHandlingPlug)
 
       # Verify duration is still calculated for failed requests
       assert is_number(log_map["duration"])
@@ -581,7 +581,7 @@ defmodule Plug.LoggerJSONTest do
     test "request phase has phase=request and status=nil" do
       logs =
         conn(:get, "/")
-        |> make_request_and_get_all_logs(MyPlugWithRequestAndResponseLogging)
+        |> make_request_and_get_all_logs(RequestResponseLoggingPlug)
 
       # Should have exactly 2 log entries
       assert length(logs) == 2
@@ -602,7 +602,7 @@ defmodule Plug.LoggerJSONTest do
     test "response phase has phase=response and status set" do
       log_map =
         conn(:get, "/")
-        |> make_request_and_get_log(MyDebugPlug)
+        |> make_request_and_get_log(DebugPlug)
 
       # Default behavior logs only response
       assert log_map["phase"] == "response"
@@ -614,7 +614,7 @@ defmodule Plug.LoggerJSONTest do
       for method <- [:get, :post, :put, :patch, :delete, :options] do
         log_map =
           conn(method, "/api/test")
-          |> make_request_and_get_log(MyDebugPlug)
+          |> make_request_and_get_log(DebugPlug)
 
         assert log_map["phase"] == "response"
         assert log_map["method"] == String.upcase(to_string(method))
@@ -626,7 +626,7 @@ defmodule Plug.LoggerJSONTest do
       # Test with 404 error - using conditional logging plug that logs 404s
       log_map =
         conn(:get, "/api/nonexistent")
-        |> make_request_and_get_log(MyPlugWithConditionalLogging)
+        |> make_request_and_get_log(ConditionalLoggingPlug)
 
       assert log_map["phase"] == "response"
       assert log_map["status"] == 404
@@ -711,7 +711,7 @@ defmodule Plug.LoggerJSONTest do
       # API path - should log request
       logs =
         conn(:get, "/api/users")
-        |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+        |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       # Should have exactly 2 logs (request and response)
       assert length(logs) == 2
@@ -724,7 +724,7 @@ defmodule Plug.LoggerJSONTest do
       # Non-API path - should not log request
       logs =
         conn(:get, "/health")
-        |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+        |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 0
     end
@@ -733,7 +733,7 @@ defmodule Plug.LoggerJSONTest do
       # Non-health path - should log response
       logs =
         conn(:get, "/api/users")
-        |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+        |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 2
       [request_log, response_log] = logs
@@ -745,7 +745,7 @@ defmodule Plug.LoggerJSONTest do
       # Health path - should not log response
       logs =
         conn(:get, "/health")
-        |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+        |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 0
     end
@@ -754,7 +754,7 @@ defmodule Plug.LoggerJSONTest do
       # Test with error response
       logs =
         conn(:get, "/api/nonexistent")
-        |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+        |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 2
       [request_log, response_log] = logs
@@ -770,7 +770,7 @@ defmodule Plug.LoggerJSONTest do
       for method <- [:get, :post, :put, :patch, :delete, :options] do
         logs =
           conn(method, "/api/test")
-          |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+          |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
         assert length(logs) == 2
         [request_log, response_log] = logs
@@ -788,7 +788,7 @@ defmodule Plug.LoggerJSONTest do
         conn(:get, "/api/users")
         |> assign(:user, %{user_id: "1234"})
         |> put_private(:private_resource, %{id: "555"})
-        |> make_request_and_get_all_logs(MyPlugWithSeparateLogging)
+        |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 2
       [request_log, response_log] = logs
