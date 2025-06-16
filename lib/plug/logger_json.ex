@@ -170,12 +170,16 @@ defmodule Plug.LoggerJSON do
     conn = Conn.put_private(conn, :plug_logger_json_start, start)
     conn = Conn.put_private(conn, :plug_logger_json_level, level)
 
+    # Log request phase if enabled
     if should_log_request?(conn, opts) do
       log(conn, level, start, opts)
     end
 
+    # Register before_send callback for response phase
     Conn.register_before_send(conn, fn conn ->
       if should_log_response?(conn, opts) do
+        # Mark that we're in the before_send callback
+        conn = Conn.put_private(conn, :plug_logger_json_before_send, true)
         log(conn, level, start, opts)
       end
 
@@ -198,6 +202,8 @@ defmodule Plug.LoggerJSON do
         should_log = should_log_response?(conn, opts)
 
         if should_log do
+          # Mark that we're in the response phase since this is being called directly
+          conn = Conn.put_private(conn, :plug_logger_json_before_send, true)
           log(conn, level, start, opts)
         end
 
@@ -280,8 +286,8 @@ defmodule Plug.LoggerJSON do
     req_id = Logger.metadata()[:request_id]
     req_headers = format_map_list(conn.req_headers)
 
-    # Determine phase based on whether we have a status (response) or not (request)
-    phase = if conn.status, do: "response", else: "request"
+    # Determine phase based on whether we're in the before_send callback
+    phase = if conn.private[:plug_logger_json_before_send], do: "response", else: "request"
 
     log_json = %{
       "api_version" => Map.get(req_headers, "accept", "N/A"),
