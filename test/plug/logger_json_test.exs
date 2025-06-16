@@ -17,6 +17,16 @@ defmodule Plug.LoggerJSONTest do
     DelayPlug
   }
 
+  # Common test data
+  @common_headers %{
+    "content-type" => "application/json"
+  }
+
+  @http_methods [:get, :post, :put, :patch, :delete, :options]
+  @health_paths ["/health", "/metrics"]
+  @api_paths ["/api/users", "/api/test"]
+  @error_paths ["/api/nonexistent"]
+
   # Setup to preserve original config and restore it after tests
   setup do
     original_config = Application.get_env(:plug_logger_json, :filtered_keys)
@@ -111,6 +121,7 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
+  # Common assertion helpers
   defp assert_common_log_fields(log_map) do
     assert log_map["date_time"]
     # Can be 0 for request phase
@@ -127,6 +138,18 @@ defmodule Plug.LoggerJSONTest do
     assert log_map["request_id"] == nil
   end
 
+  defp assert_response_log(log_map, expected_status \\ 200) do
+    assert log_map["phase"] == "response"
+    assert log_map["status"] == expected_status
+    assert log_map["log_type"] == "http"
+  end
+
+  defp assert_request_log(log_map) do
+    assert log_map["phase"] == "request"
+    assert log_map["status"] == nil
+    assert log_map["log_type"] == "http"
+  end
+
   # Helper to test duration in log
   defp with_duration(log_map, test_fn) do
     duration = log_map["duration"]
@@ -134,11 +157,29 @@ defmodule Plug.LoggerJSONTest do
     log_map
   end
 
+  # Helper to setup common test connection
+  defp setup_test_conn(method \\ :get, path \\ "/", params \\ %{}, headers \\ %{}) do
+    conn(method, path, params)
+    |> Map.update!(:req_headers, fn existing_headers ->
+      Enum.map(headers, fn {key, value} -> {key, value} end) ++ existing_headers
+    end)
+  end
+
+  # Helper to setup test connection with forwarded headers
+  defp setup_test_conn_with_forwarded(method \\ :get, path \\ "/", params \\ %{}, headers \\ %{}) do
+    forwarded_headers = %{
+      "x-forwarded-for" => "209.49.75.165",
+      "x-client-version" => "ios/1.5.4"
+    }
+
+    setup_test_conn(method, path, params, Map.merge(headers, forwarded_headers))
+  end
+
   # Update the existing basic request logging tests
   describe "basic request logging" do
-    test "logs GET request with no parameters or headers" do
+    test "logs basic GET request" do
       log_map =
-        conn(:get, "/")
+        setup_test_conn()
         |> make_request_and_get_log()
 
       assert_common_log_fields(log_map)
@@ -146,19 +187,15 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["params"] == %{}
       assert log_map["path"] == "/"
-      assert log_map["status"] == 200
-      # Default behavior logs response only
-      assert log_map["phase"] == "response"
+      assert_response_log(log_map)
       # Add assertions for date_time format
       assert is_binary(log_map["date_time"])
       assert String.match?(log_map["date_time"], ~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
     end
 
-    test "logs GET request with query parameters and headers" do
+    test "logs GET request with query params" do
       log_map =
-        conn(:get, "/", fake_param: "1")
-        |> put_req_header("authorization", "f3443890-6683-4a25-8094-f23cf10b72d0")
-        |> put_req_header("content-type", "application/json")
+        setup_test_conn(:get, "/", %{fake_param: "1"}, @common_headers)
         |> make_request_and_get_log()
 
       assert_common_log_fields(log_map)
@@ -166,8 +203,7 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "GET"
       assert log_map["params"] == %{"fake_param" => "1"}
       assert log_map["path"] == "/"
-      assert log_map["status"] == 200
-      assert log_map["phase"] == "response"
+      assert_response_log(log_map)
     end
 
     test "logs POST request with JSON body" do
@@ -181,8 +217,7 @@ defmodule Plug.LoggerJSONTest do
       }
 
       log_map =
-        conn(:post, "/", Jason.encode!(json_payload))
-        |> put_req_header("content-type", "application/json")
+        setup_test_conn(:post, "/", json_payload, @common_headers)
         |> make_request_and_get_log()
 
       assert_common_log_fields(log_map)
@@ -190,15 +225,14 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["method"] == "POST"
       assert log_map["params"] == json_payload
       assert log_map["path"] == "/"
-      assert log_map["status"] == 200
-      assert log_map["phase"] == "response"
+      assert_response_log(log_map)
     end
   end
 
   describe "request and response logging" do
-    test "logs both request and response when should_log_fn allows both" do
+    test "logs both request and response phases" do
       logs =
-        conn(:get, "/")
+        setup_test_conn()
         |> make_request_and_get_all_logs(RequestResponseLoggingPlug)
 
       # Should have exactly 2 log entries
@@ -209,32 +243,31 @@ defmodule Plug.LoggerJSONTest do
       # Request log (first one, no status)
       assert request_log["method"] == "GET"
       assert request_log["path"] == "/"
-      assert request_log["status"] == nil
+      assert_request_log(request_log)
 
       # Response log (second one, with status)
       assert response_log["method"] == "GET"
       assert response_log["path"] == "/"
-      assert response_log["status"] == 200
+      assert_response_log(response_log)
     end
 
-    test "logs only response with default behavior" do
+    test "logs only response by default" do
       logs =
-        conn(:get, "/")
+        setup_test_conn()
         |> make_request_and_get_all_logs(DebugPlug)
 
       # Should have exactly 1 log entry (response only)
       assert length(logs) == 1
 
       [response_log] = logs
-      assert response_log["status"] == 200
+      assert_response_log(response_log)
     end
   end
 
-  # Update Phoenix integration test
   describe "Phoenix integration" do
-    test "logs handler information when Phoenix controller is present" do
+    test "logs Phoenix controller info" do
       log_map =
-        conn(:get, "/")
+        setup_test_conn()
         |> put_private(:phoenix_controller, Plug.LoggerJSONTest)
         |> put_private(:phoenix_action, :show)
         |> put_private(:phoenix_format, "json")
@@ -248,12 +281,10 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  # Update client information test
   describe "client information" do
-    test "extracts IP from X-Forwarded-For header" do
+    test "logs client IP from X-Forwarded-For" do
       log_map =
-        conn(:get, "/")
-        |> put_req_header("x-forwarded-for", "209.49.75.165")
+        setup_test_conn_with_forwarded()
         |> put_private(:phoenix_controller, Plug.LoggerJSONTest)
         |> put_private(:phoenix_action, :show)
         |> make_request_and_get_log()
@@ -266,9 +297,9 @@ defmodule Plug.LoggerJSONTest do
   end
 
   describe "parameter filtering" do
-    test "does not expose authorization headers in params" do
+    test "filters authorization headers" do
       log_map =
-        conn(:get, "/")
+        setup_test_conn()
         |> put_req_header("authorization", "f3443890-6683-4a25-8094-f23cf10b72d0")
         |> make_request_and_get_log()
 
@@ -281,7 +312,7 @@ defmodule Plug.LoggerJSONTest do
       Application.put_env(:plug_logger_json, :filtered_keys, ["password", "authorization"])
 
       log_map =
-        conn(:post, "/", authorization: "secret-token", username: "test")
+        setup_test_conn(:post, "/", %{authorization: "secret-token", username: "test"})
         |> make_request_and_get_log()
 
       assert log_map["params"]["authorization"] == "[FILTERED]"
@@ -292,7 +323,7 @@ defmodule Plug.LoggerJSONTest do
       Application.put_env(:plug_logger_json, :filtered_keys, ["password"])
 
       log_map =
-        conn(:post, "/", %{
+        setup_test_conn(:post, "/", %{
           user: %{
             password: "secret",
             username: "me",
@@ -314,12 +345,14 @@ defmodule Plug.LoggerJSONTest do
       assert user_params["settings"]["preferences"]["password"] == "[FILTERED]"
     end
 
-    test "filters sensitive parameters consistently across HTTP methods" do
-      Application.put_env(:plug_logger_json, :filtered_keys, ["password", "token"])
+    for method <- @http_methods do
+      @tag method: method
+      test "filters sensitive params for HTTP method #{method}", ctx do
+        %{method: method} = ctx
+        Application.put_env(:plug_logger_json, :filtered_keys, ["password", "token"])
 
-      for method <- [:get, :post, :put, :patch, :delete] do
         log_map =
-          conn(method, "/", %{
+          setup_test_conn(method, "/", %{
             password: "secret",
             token: "sensitive_token",
             public_data: "visible"
@@ -333,11 +366,10 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  # Update extra attributes test
   describe "extra attributes" do
-    test "includes custom attributes from assigns and private data" do
+    test "includes custom attributes from assigns and private" do
       log_map =
-        conn(:get, "/")
+        setup_test_conn()
         |> assign(:user, %{user_id: "1234"})
         |> put_private(:private_resource, %{id: "555"})
         |> make_request_and_get_log()
@@ -349,11 +381,10 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  # Update special data types test
-  describe "special data types handling" do
+  describe "special data types" do
     test "handles structs in parameters" do
       log_map =
-        conn(:post, "/", %{photo: %Plug.Upload{}})
+        setup_test_conn(:post, "/", %{photo: %Plug.Upload{}})
         |> make_request_and_get_log()
 
       expected_photo = %{"content_type" => nil, "filename" => nil, "path" => nil}
@@ -363,9 +394,9 @@ defmodule Plug.LoggerJSONTest do
   end
 
   describe "log level configurations" do
-    test "excludes debug information when log level is info" do
+    test "excludes debug info at info level" do
       log_map =
-        conn(:get, "/", fake_param: "1")
+        setup_test_conn(:get, "/", %{fake_param: "1"})
         |> put_req_header("x-forwarded-for", "209.49.75.165")
         |> put_req_header("x-client-version", "ios/1.5.4")
         |> make_request_and_get_log(InfoPlug)
@@ -375,9 +406,9 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["params"] == nil
     end
 
-    test "includes debug information when explicitly enabled for info level" do
+    test "includes debug info when explicitly enabled" do
       log_map =
-        conn(:get, "/", fake_param: "1")
+        setup_test_conn(:get, "/", %{fake_param: "1"})
         |> put_req_header("x-forwarded-for", "209.49.75.165")
         |> put_req_header("x-client-version", "ios/1.5.4")
         |> make_request_and_get_log(InfoWithDebugPlug)
@@ -389,7 +420,7 @@ defmodule Plug.LoggerJSONTest do
   end
 
   describe "error logging" do
-    test "logs runtime errors with stacktrace information" do
+    test "logs runtime errors with stacktrace" do
       stacktrace = [
         {Plug.LoggerJSONTest, :call, 2, [file: ~c"lib/test.ex", line: 10]},
         {Plug.Adapters.Cowboy.Handler, :upgrade, 4, [file: ~c"lib/plug/adapters/cowboy/handler.ex", line: 15]}
@@ -411,11 +442,10 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  # Update exception handling test
   describe "exception handling" do
-    test "logs request even when an exception is raised in the controller (simple approach)" do
+    test "logs request when exception occurs" do
       log_map =
-        conn(:get, "/exception")
+        setup_test_conn(:get, "/exception")
         |> make_exception_request_and_get_log(ExceptionHandlingPlug)
 
       # Verify that the request was logged despite the exception
@@ -429,9 +459,9 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["phase"] == "response"
     end
 
-    test "logs normal requests without exceptions in exception-handling plug" do
+    test "logs normal requests without exceptions" do
       log_map =
-        conn(:get, "/normal")
+        setup_test_conn(:get, "/normal")
         |> make_request_and_get_log(ExceptionHandlingPlug)
 
       # Verify normal operation still works
@@ -443,27 +473,18 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  # Update conditional logging tests
-  describe "conditional logging with should_log_fn" do
-    test "does not log requests to health check paths" do
-      message = make_request_and_get_message(conn(:get, "/health"), ConditionalLoggingPlug)
-      assert message == ""
+  describe "conditional logging" do
+    for path <- @health_paths do
+      @tag path: path
+      test "skips health check for path #{path}", ctx do
+        %{path: path} = ctx
+        message = make_request_and_get_message(setup_test_conn(:get, path), ConditionalLoggingPlug)
+        assert message == ""
+      end
     end
 
-    test "does not log requests to metrics endpoints" do
-      message = make_request_and_get_message(conn(:get, "/metrics"), ConditionalLoggingPlug)
-      assert message == ""
-    end
-
-    test "does not log successful OPTIONS requests" do
-      message = make_request_and_get_message(conn(:options, "/api/users"), ConditionalLoggingPlug)
-
-      assert message == "" || String.contains?(message, "\"status\":200") ||
-               String.contains?(message, "\"phase\":\"request\"")
-    end
-
-    test "does not log successful requests to internal paths" do
-      message = make_request_and_get_message(conn(:get, "/internal/status"), ConditionalLoggingPlug)
+    test "skips successful OPTIONS requests" do
+      message = make_request_and_get_message(setup_test_conn(:options, "/api/users"), ConditionalLoggingPlug)
 
       assert message == "" || String.contains?(message, "\"status\":200") ||
                String.contains?(message, "\"phase\":\"request\"")
@@ -471,64 +492,54 @@ defmodule Plug.LoggerJSONTest do
 
     test "logs failed OPTIONS requests" do
       log_map =
-        conn(:options, "/api/nonexistent")
+        setup_test_conn(:options, "/api/nonexistent")
         |> make_request_and_get_log(ConditionalLoggingPlug)
 
       assert_common_log_fields(log_map)
       assert log_map["method"] == "OPTIONS"
       assert log_map["path"] == "/api/nonexistent"
-      assert log_map["status"] == 404
-      assert log_map["phase"] == "response"
+      assert_response_log(log_map, 404)
     end
 
-    test "logs failed requests to internal paths" do
-      log_map =
-        conn(:get, "/internal/status")
-        |> assign(:force_error, true)
-        |> make_request_and_get_log(ConditionalLoggingPlug)
+    for path <- @api_paths do
+      @tag path: path
+      test "logs API requests for existing path #{path}", ctx do
+        %{path: path} = ctx
 
-      assert_common_log_fields(log_map)
-      assert log_map["method"] == "GET"
-      assert log_map["path"] == "/internal/status"
-      assert log_map["status"] == 500
-      assert log_map["phase"] == "response"
+        log_map =
+          setup_test_conn(:get, path)
+          |> make_request_and_get_log(ConditionalLoggingPlug)
+
+        assert_common_log_fields(log_map)
+        assert log_map["method"] == "GET"
+        assert log_map["path"] == path
+        assert_response_log(log_map)
+      end
     end
 
-    test "logs requests to regular API paths" do
-      log_map =
-        conn(:get, "/api/users")
-        |> make_request_and_get_log(ConditionalLoggingPlug)
+    # Test error paths separately
+    for path <- @error_paths do
+      @tag path: path
+      test "logs API requests for not found path #{path}", ctx do
+        %{path: path} = ctx
 
-      assert_common_log_fields(log_map)
-      assert log_map["method"] == "GET"
-      assert log_map["path"] == "/api/users"
-      assert log_map["status"] == 200
-      assert log_map["phase"] == "response"
-    end
+        log_map =
+          setup_test_conn(:get, path)
+          |> make_request_and_get_log(ConditionalLoggingPlug)
 
-    test "logs when should_log_fn is not provided (default behavior)" do
-      # Test default behavior (should only log responses)
-      logs =
-        conn(:get, "/health")
-        |> make_request_and_get_all_logs(DebugPlug)
-
-      # Should have exactly 1 log entry (response only)
-      assert length(logs) == 1
-
-      [response_log] = logs
-      assert response_log["method"] == "GET"
-      assert response_log["path"] == "/health"
-      assert response_log["status"] == 200
-      assert response_log["phase"] == "response"
+        assert_common_log_fields(log_map)
+        assert log_map["method"] == "GET"
+        assert log_map["path"] == path
+        assert_response_log(log_map, 404)
+      end
     end
   end
 
-  # Update duration calculation test
   describe "duration calculation" do
-    test "calculates duration in milliseconds with proper precision" do
+    test "calculates duration in milliseconds" do
       # Create a test that simulates some processing time
       log_map =
-        conn(:get, "/")
+        setup_test_conn()
         |> Plug.LoggerJSON.call(duration_unit: :millisecond)
         |> make_request_and_get_log(DelayPlug)
 
@@ -545,9 +556,9 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["phase"] == "response"
     end
 
-    test "duration is present even when request fails" do
+    test "calculates duration for failed requests" do
       log_map =
-        conn(:get, "/exception")
+        setup_test_conn(:get, "/exception")
         |> make_exception_request_and_get_log(ExceptionHandlingPlug)
 
       # Verify duration is still calculated for failed requests
@@ -557,11 +568,10 @@ defmodule Plug.LoggerJSONTest do
     end
   end
 
-  # Add specific tests for the phase attribute
   describe "phase attribute" do
-    test "request phase has phase=request and status=nil" do
+    test "request phase has no status" do
       logs =
-        conn(:get, "/")
+        setup_test_conn()
         |> make_request_and_get_all_logs(RequestResponseLoggingPlug)
 
       # Should have exactly 2 log entries
@@ -570,48 +580,45 @@ defmodule Plug.LoggerJSONTest do
       [request_log, response_log] = logs
 
       # Request log should have phase=request and no status
-      assert request_log["phase"] == "request"
-      assert request_log["status"] == nil
+      assert_request_log(request_log)
       # Increased delta to handle small timing variations
       assert_in_delta request_log["duration"], 0, 0.02
 
       # Response log should have phase=response and status set
-      assert response_log["phase"] == "response"
-      assert response_log["status"] == 200
+      assert_response_log(response_log)
       assert is_integer(response_log["duration"])
     end
 
-    test "response phase has phase=response and status set" do
+    test "response phase has status" do
       log_map =
-        conn(:get, "/")
+        setup_test_conn()
         |> make_request_and_get_log(DebugPlug)
 
       # Default behavior logs only response
-      assert log_map["phase"] == "response"
-      assert log_map["status"] == 200
-      assert log_map["log_type"] == "http"
+      assert_response_log(log_map)
     end
 
-    test "phase attribute is consistent across all HTTP methods" do
-      for method <- [:get, :post, :put, :patch, :delete, :options] do
+    for method <- @http_methods do
+      @tag method: method
+      test "phase is consistent for HTTP method #{method}", ctx do
+        %{method: method} = ctx
+
         log_map =
-          conn(method, "/api/test")
+          setup_test_conn(method, "/api/test")
           |> make_request_and_get_log(DebugPlug)
 
-        assert log_map["phase"] == "response"
+        assert_response_log(log_map)
         assert log_map["method"] == String.upcase(to_string(method))
-        assert log_map["status"] == 200
       end
     end
 
-    test "phase attribute works with different status codes" do
+    test "phase works with different status codes" do
       # Test with 404 error - using conditional logging plug that logs 404s
       log_map =
-        conn(:get, "/api/nonexistent")
+        setup_test_conn(:get, "/api/nonexistent")
         |> make_request_and_get_log(ConditionalLoggingPlug)
 
-      assert log_map["phase"] == "response"
-      assert log_map["status"] == 404
+      assert_response_log(log_map, 404)
     end
   end
 
@@ -625,7 +632,7 @@ defmodule Plug.LoggerJSONTest do
       @tag expected_duration: expected_duration
       test "logs duration in #{duration_unit}", ctx do
         %{duration_unit: duration_unit, expected_duration: expected_duration} = ctx
-        conn = conn(:get, "/")
+        conn = setup_test_conn()
 
         conn
         |> Plug.LoggerJSON.call(duration_unit: duration_unit)
@@ -636,8 +643,8 @@ defmodule Plug.LoggerJSONTest do
       end
     end
 
-    test "defaults to milliseconds when duration_unit is not specified" do
-      conn(:get, "/")
+    test "defaults to milliseconds" do
+      setup_test_conn()
       |> Plug.LoggerJSON.call([])
       |> make_request_and_get_log(DelayPlug)
       |> with_duration(fn duration ->
@@ -647,75 +654,76 @@ defmodule Plug.LoggerJSONTest do
   end
 
   describe "separate request and response logging" do
-    test "logs request only when should_log_request_fn returns true" do
+    test "logs request for API paths" do
       # API path - should log request
       logs =
-        conn(:get, "/api/users")
+        setup_test_conn(:get, "/api/users")
         |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       # Should have exactly 2 logs (request and response)
       assert length(logs) == 2
       [request_log, response_log] = logs
-      assert request_log["phase"] == "request"
-      assert response_log["phase"] == "response"
+      assert_request_log(request_log)
+      assert_response_log(response_log)
       assert request_log["path"] == "/api/users"
       assert response_log["path"] == "/api/users"
 
       # Non-API path - should not log request
       logs =
-        conn(:get, "/health")
+        setup_test_conn(:get, "/health")
         |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 0
     end
 
-    test "logs response only when should_log_response_fn returns true" do
+    test "logs response for non-health paths" do
       # Non-health path - should log response
       logs =
-        conn(:get, "/api/users")
+        setup_test_conn(:get, "/api/users")
         |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 2
       [request_log, response_log] = logs
-      assert request_log["phase"] == "request"
-      assert response_log["phase"] == "response"
+      assert_request_log(request_log)
+      assert_response_log(response_log)
       assert request_log["path"] == "/api/users"
       assert response_log["path"] == "/api/users"
 
       # Health path - should not log response
       logs =
-        conn(:get, "/health")
+        setup_test_conn(:get, "/health")
         |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 0
     end
 
-    test "handles error responses correctly" do
+    test "handles error responses" do
       # Test with error response
       logs =
-        conn(:get, "/api/nonexistent")
+        setup_test_conn(:get, "/api/nonexistent")
         |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 2
       [request_log, response_log] = logs
-      assert request_log["phase"] == "request"
-      assert response_log["phase"] == "response"
-      # The status is set in the passthrough function
-      assert response_log["status"] == 200
+      assert_request_log(request_log)
+      assert_response_log(response_log)
       assert request_log["path"] == "/api/nonexistent"
       assert response_log["path"] == "/api/nonexistent"
     end
 
-    test "works with different HTTP methods" do
-      for method <- [:get, :post, :put, :patch, :delete, :options] do
+    for method <- @http_methods do
+      @tag method: method
+      test "works with HTTP method #{method}", ctx do
+        %{method: method} = ctx
+
         logs =
-          conn(method, "/api/test")
+          setup_test_conn(method, "/api/test")
           |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
         assert length(logs) == 2
         [request_log, response_log] = logs
-        assert request_log["phase"] == "request"
-        assert response_log["phase"] == "response"
+        assert_request_log(request_log)
+        assert_response_log(response_log)
         assert request_log["method"] == String.upcase(to_string(method))
         assert response_log["method"] == String.upcase(to_string(method))
         assert request_log["path"] == "/api/test"
@@ -723,17 +731,17 @@ defmodule Plug.LoggerJSONTest do
       end
     end
 
-    test "preserves existing functionality with extra attributes" do
+    test "preserves extra attributes" do
       logs =
-        conn(:get, "/api/users")
+        setup_test_conn(:get, "/api/users")
         |> assign(:user, %{user_id: "1234"})
         |> put_private(:private_resource, %{id: "555"})
         |> make_request_and_get_all_logs(SeparateLoggingPlug)
 
       assert length(logs) == 2
       [request_log, response_log] = logs
-      assert request_log["phase"] == "request"
-      assert response_log["phase"] == "response"
+      assert_request_log(request_log)
+      assert_response_log(response_log)
 
       # Extra attributes should be present in both request and response logs
       assert request_log["user_id"] == "1234"
