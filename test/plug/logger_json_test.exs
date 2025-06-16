@@ -388,6 +388,9 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["status"] == 200
       # Default behavior logs response only
       assert log_map["phase"] == "response"
+      # Add assertions for date_time format
+      assert is_binary(log_map["date_time"])
+      assert String.match?(log_map["date_time"], ~r/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/)
     end
 
     test "logs GET request with query parameters and headers" do
@@ -531,12 +534,44 @@ defmodule Plug.LoggerJSONTest do
       Application.put_env(:plug_logger_json, :filtered_keys, ["password"])
 
       log_map =
-        conn(:post, "/", %{user: %{password: "secret", username: "me"}})
+        conn(:post, "/", %{
+          user: %{
+            password: "secret",
+            username: "me",
+            settings: %{
+              password: "nested_secret",
+              preferences: %{
+                password: "deeply_nested_secret"
+              }
+            }
+          }
+        })
         |> make_request_and_get_log()
 
       user_params = log_map["params"]["user"]
       assert user_params["password"] == "[FILTERED]"
       assert user_params["username"] == "me"
+      # Add assertions for deeply nested parameters
+      assert user_params["settings"]["password"] == "[FILTERED]"
+      assert user_params["settings"]["preferences"]["password"] == "[FILTERED]"
+    end
+
+    test "filters sensitive parameters consistently across HTTP methods" do
+      Application.put_env(:plug_logger_json, :filtered_keys, ["password", "token"])
+
+      for method <- [:get, :post, :put, :patch, :delete] do
+        log_map =
+          conn(method, "/", %{
+            password: "secret",
+            token: "sensitive_token",
+            public_data: "visible"
+          })
+          |> make_request_and_get_log()
+
+        assert log_map["params"]["password"] == "[FILTERED]"
+        assert log_map["params"]["token"] == "[FILTERED]"
+        assert log_map["params"]["public_data"] == "visible"
+      end
     end
   end
 
@@ -612,7 +647,9 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["log_type"] == "error"
       assert log_map["message"] =~ "** (RuntimeError) oops"
       assert log_map["message"] =~ "lib/test.ex:10: Plug.LoggerJSONTest.call/2"
+      assert log_map["message"] =~ "lib/plug/adapters/cowboy/handler.ex:15: Plug.Adapters.Cowboy.Handler.upgrade/4"
       assert log_map["request_id"] == nil
+      assert log_map["error_type"] == "Elixir.RuntimeError"
     end
   end
 

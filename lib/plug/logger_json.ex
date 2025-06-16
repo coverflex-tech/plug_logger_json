@@ -253,6 +253,7 @@ defmodule Plug.LoggerJSON do
       Logger.log(:error, fn ->
         %{
           "log_type" => "error",
+          "error_type" => Kernel.is_exception(reason) && reason.__struct__ || kind,
           "message" => Exception.format(kind, reason, stacktrace),
           "request_id" => Logger.metadata()[:request_id]
         }
