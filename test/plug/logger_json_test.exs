@@ -13,7 +13,8 @@ defmodule Plug.LoggerJSONTest do
     ConditionalLoggingPlug,
     RequestResponseLoggingPlug,
     ExceptionHandlingPlug,
-    SeparateLoggingPlug
+    SeparateLoggingPlug,
+    DelayPlug
   }
 
   # Setup to preserve original config and restore it after tests
@@ -34,8 +35,10 @@ defmodule Plug.LoggerJSONTest do
   # Test helpers
   defp remove_colors(message) do
     message
-    |> String.replace(~r/\e\[[0-9;]*m/, "")  # Remove all ANSI color codes
-    |> String.replace("\n", "")              # Remove newlines
+    # Remove all ANSI color codes
+    |> String.replace(~r/\e\[[0-9;]*m/, "")
+    # Remove newlines
+    |> String.replace("\n", "")
     |> String.trim()
   end
 
@@ -55,13 +58,9 @@ defmodule Plug.LoggerJSONTest do
   end
 
   defp get_log(func) do
-    data =
-      capture_log(fn ->
-        Process.put(:get_log, func.())
-        Logger.flush()
-      end)
-
-    {Process.get(:get_log), data}
+    with_log(fn ->
+      func.()
+    end)
   end
 
   # Helper to parse potentially multiple JSON lines
@@ -126,13 +125,6 @@ defmodule Plug.LoggerJSONTest do
     assert log_map["client_version"] == "N/A"
     assert log_map["handler"] == "N/A"
     assert log_map["request_id"] == nil
-  end
-
-  # Helper to decode a single log line
-  defp decode_log_line(message) do
-    message
-    |> String.trim()
-    |> Jason.decode!()
   end
 
   # Helper to test duration in log
@@ -218,13 +210,11 @@ defmodule Plug.LoggerJSONTest do
       assert request_log["method"] == "GET"
       assert request_log["path"] == "/"
       assert request_log["status"] == nil
-      assert_in_delta request_log["duration"], 0, 0.02  # Increased delta to handle small timing variations
 
       # Response log (second one, with status)
       assert response_log["method"] == "GET"
       assert response_log["path"] == "/"
       assert response_log["status"] == 200
-      assert response_log["duration"] > 0
     end
 
     test "logs only response with default behavior" do
@@ -237,7 +227,6 @@ defmodule Plug.LoggerJSONTest do
 
       [response_log] = logs
       assert response_log["status"] == 200
-      assert response_log["duration"] > 0
     end
   end
 
@@ -468,12 +457,16 @@ defmodule Plug.LoggerJSONTest do
 
     test "does not log successful OPTIONS requests" do
       message = make_request_and_get_message(conn(:options, "/api/users"), ConditionalLoggingPlug)
-      assert message == "" || String.contains?(message, "\"status\":200") || String.contains?(message, "\"phase\":\"request\"")
+
+      assert message == "" || String.contains?(message, "\"status\":200") ||
+               String.contains?(message, "\"phase\":\"request\"")
     end
 
     test "does not log successful requests to internal paths" do
       message = make_request_and_get_message(conn(:get, "/internal/status"), ConditionalLoggingPlug)
-      assert message == "" || String.contains?(message, "\"status\":200") || String.contains?(message, "\"phase\":\"request\"")
+
+      assert message == "" || String.contains?(message, "\"status\":200") ||
+               String.contains?(message, "\"phase\":\"request\"")
     end
 
     test "logs failed OPTIONS requests" do
@@ -536,7 +529,8 @@ defmodule Plug.LoggerJSONTest do
       # Create a test that simulates some processing time
       log_map =
         conn(:get, "/")
-        |> make_request_and_get_log()
+        |> Plug.LoggerJSON.call(duration_unit: :millisecond)
+        |> make_request_and_get_log(DelayPlug)
 
       # Verify duration is present and is a number
       assert is_number(log_map["duration"])
@@ -545,23 +539,10 @@ defmodule Plug.LoggerJSONTest do
       assert log_map["duration"] > 0
 
       # Duration should be reasonable (less than 1 second for a simple test)
-      assert log_map["duration"] < 1000
+      assert log_map["duration"] < DelayPlug.delay() * 2
 
       # Verify phase is response for default behavior
       assert log_map["phase"] == "response"
-
-      # Verify it's rounded to 3 decimal places by checking it can be parsed as expected
-      duration_str = Float.to_string(log_map["duration"])
-
-      decimal_places =
-        case String.split(duration_str, ".") do
-          # No decimal places
-          [_integer] -> 0
-          [_integer, decimal] -> String.length(decimal)
-        end
-
-      # Should have at most 3 decimal places
-      assert decimal_places <= 3
     end
 
     test "duration is present even when request fails" do
@@ -571,7 +552,7 @@ defmodule Plug.LoggerJSONTest do
 
       # Verify duration is still calculated for failed requests
       assert is_number(log_map["duration"])
-      assert log_map["duration"] > 0
+      assert is_integer(log_map["duration"])
       assert log_map["phase"] == "response"
     end
   end
@@ -591,12 +572,13 @@ defmodule Plug.LoggerJSONTest do
       # Request log should have phase=request and no status
       assert request_log["phase"] == "request"
       assert request_log["status"] == nil
-      assert_in_delta request_log["duration"], 0, 0.02  # Increased delta to handle small timing variations
+      # Increased delta to handle small timing variations
+      assert_in_delta request_log["duration"], 0, 0.02
 
       # Response log should have phase=response and status set
       assert response_log["phase"] == "response"
       assert response_log["status"] == 200
-      assert response_log["duration"] > 0
+      assert is_integer(response_log["duration"])
     end
 
     test "response phase has phase=response and status set" do
@@ -634,74 +616,32 @@ defmodule Plug.LoggerJSONTest do
   end
 
   describe "duration unit configuration" do
-    test "logs duration in nanoseconds when duration_unit is :nanoseconds" do
-      conn = conn(:get, "/")
+    for {duration_unit, expected_duration} <- [
+          {:nanosecond, DelayPlug.delay() * 100_000},
+          {:microsecond, DelayPlug.delay() * 100},
+          {:millisecond, DelayPlug.delay()}
+        ] do
+      @tag duration_unit: duration_unit
+      @tag expected_duration: expected_duration
+      test "logs duration in #{duration_unit}", ctx do
+        %{duration_unit: duration_unit, expected_duration: expected_duration} = ctx
+        conn = conn(:get, "/")
 
-      capture_log(fn ->
         conn
-        |> Plug.LoggerJSON.call(duration_unit: :nanoseconds)
-        |> send_resp(200, "")
-      end)
-      |> remove_colors()
-      |> decode_log_line()
-      |> with_duration(fn duration ->
-        # Duration should be an integer in nanoseconds
-        assert is_integer(duration)
-        # Should be at least 1000 nanoseconds (1 microsecond)
-        assert duration >= 1000
-      end)
-    end
-
-    test "logs duration in microseconds when duration_unit is :microseconds" do
-      conn = conn(:get, "/")
-
-      capture_log(fn ->
-        conn
-        |> Plug.LoggerJSON.call(duration_unit: :microseconds)
-        |> send_resp(200, "")
-      end)
-      |> remove_colors()
-      |> decode_log_line()
-      |> with_duration(fn duration ->
-        # Duration should be an integer in microseconds
-        assert is_integer(duration)
-        # Should be at least 1 microsecond
-        assert duration >= 1
-      end)
-    end
-
-    test "logs duration in milliseconds when duration_unit is :milliseconds" do
-      conn = conn(:get, "/")
-
-      capture_log(fn ->
-        conn
-        |> Plug.LoggerJSON.call(duration_unit: :milliseconds)
-        |> send_resp(200, "")
-      end)
-      |> remove_colors()
-      |> decode_log_line()
-      |> with_duration(fn duration ->
-        # Duration should be a float in milliseconds
-        assert is_float(duration)
-        # Should be a reasonable value
-        assert duration >= 0.001
-      end)
+        |> Plug.LoggerJSON.call(duration_unit: duration_unit)
+        |> make_request_and_get_log(DelayPlug)
+        |> with_duration(fn duration ->
+          assert duration >= expected_duration
+        end)
+      end
     end
 
     test "defaults to milliseconds when duration_unit is not specified" do
-      conn = conn(:get, "/")
-
-      capture_log(fn ->
-        conn
-        |> Plug.LoggerJSON.call([])
-        |> send_resp(200, "")
-      end)
-      |> remove_colors()
-      |> decode_log_line()
+      conn(:get, "/")
+      |> Plug.LoggerJSON.call([])
+      |> make_request_and_get_log(DelayPlug)
       |> with_duration(fn duration ->
-        # Should default to float milliseconds
-        assert is_float(duration)
-        assert duration >= 0.001
+        assert duration >= 1
       end)
     end
   end

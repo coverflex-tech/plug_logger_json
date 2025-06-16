@@ -259,7 +259,7 @@ defmodule Plug.LoggerJSON do
       Logger.log(:error, fn ->
         %{
           "log_type" => "error",
-          "error_type" => Kernel.is_exception(reason) && reason.__struct__ || kind,
+          "error_type" => (Kernel.is_exception(reason) && reason.__struct__) || kind,
           "message" => Exception.format(kind, reason, stacktrace),
           "request_id" => Logger.metadata()[:request_id]
         }
@@ -306,24 +306,15 @@ defmodule Plug.LoggerJSON do
 
   @spec format_duration(non_neg_integer(), opts()) :: number()
   defp format_duration(duration_microseconds, opts) do
-    duration_unit = Keyword.get(opts, :duration_unit, :milliseconds)
+    duration_unit = Keyword.get(opts, :duration_unit, :millisecond)
 
     case duration_unit do
-      :nanoseconds ->
-        # Convert microseconds to nanoseconds (multiply by 1000)
-        duration_microseconds * 1000
+      unit when unit in [:second, :millisecond, :microsecond, :nanosecond] ->
+        System.convert_time_unit(duration_microseconds, :microsecond, unit)
 
-      :microseconds ->
-        # Already in microseconds
-        duration_microseconds
-
-      :milliseconds ->
-        # Convert microseconds to milliseconds and round to 3 decimal places
-        Float.round(duration_microseconds / 1000, 3)
-
-      _ ->
-        # Default to milliseconds for invalid values
-        Float.round(duration_microseconds / 1000, 3)
+      invalid_unit ->
+        Logger.warning("Invalid duration unit: #{inspect(invalid_unit)}. Using default unit: :millisecond")
+        System.convert_time_unit(duration_microseconds, :microsecond, :millisecond)
     end
   end
 
