@@ -11,7 +11,8 @@ defmodule PlugLoggerJson.Mixfile do
       ],
       description: "Elixir Plug that formats http request logs as json",
       docs: [extras: ["README.md"]],
-      elixir: "~> 1.3",
+      elixir: "~> 1.15",
+      elixirc_paths: elixirc_paths(Mix.env()),
       homepage_url: "https://github.com/bleacherreport/plug_logger_json",
       name: "Plug Logger JSON",
       package: package(),
@@ -19,23 +20,30 @@ defmodule PlugLoggerJson.Mixfile do
       source_url: "https://github.com/bleacherreport/plug_logger_json",
       start_permanent: Mix.env() == :prod,
       test_coverage: [tool: ExCoveralls],
-      version: "0.8.0"
+      version: "0.9.0"
     ]
   end
 
+  defp elixirc_paths(:test), do: ["lib", "test/support"]
+  defp elixirc_paths(_), do: ["lib"]
+
   def application do
-    [applications: [:logger, :plug]]
+    [applications: [:logger, :plug, :jason]]
   end
 
   defp deps do
     [
-      {:credo, "~> 1.5.5", only: [:dev]},
-      {:dialyxir, "~> 1.1.0", only: [:dev]},
-      {:earmark, "~> 1.4.14", only: [:dev]},
-      {:ex_doc, "~> 0.23.0", only: [:dev]},
-      {:excoveralls, "~> 0.14.0", only: [:test]},
-      {:plug, "~> 1.11"},
-      {:jason, "~> 1.4"}
+      {:jason, "~> 1.4", runtime: true},
+      {:credo, "~> 1.7", only: [:dev]},
+      {:dialyxir, "~> 1.4", only: [:dev]},
+      {:earmark, "~> 1.4", only: [:dev]},
+      {:earmark_parser, "~> 1.4.39", only: [:dev]},
+      {:ex_doc, "~> 0.38", only: :dev, runtime: false, warn_if_outdated: true},
+      {:makeup, "~> 1.2", only: :dev, runtime: false},
+      {:makeup_elixir, ">= 0.0.0", only: :dev, runtime: false},
+      {:makeup_html, ">= 0.0.0", only: :dev, runtime: false},
+      {:excoveralls, "~> 0.18", only: [:test]},
+      {:plug, "~> 1.18"}
     ]
   end
 

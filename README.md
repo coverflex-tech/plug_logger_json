@@ -16,7 +16,7 @@ The support policy is to support the last 2 major versions of Erlang and the thr
 
 ## Installation
 
-1. add plug_logger_json to your list of dependencies in `mix.exs`:
+1. Add `plug_logger_json` to your list of dependencies in `mix.exs`:
 
    ```elixir
    def deps do
@@ -24,7 +24,7 @@ The support policy is to support the last 2 major versions of Erlang and the thr
    end
    ```
 
-2. ensure plug_logger_json is started before your application (Skip if using Elixir 1.4 or greater):
+2. Ensure `plug_logger_json` is started before your application (Skip if using Elixir 1.4 or greater):
 
    ```elixir
    def application do
@@ -32,10 +32,68 @@ The support policy is to support the last 2 major versions of Erlang and the thr
    end
    ```
 
-3. Replace `Plug.Logger` with either:
+3. Replace `Plug.Logger` with `Plug.LoggerJSON, opts` in your plug pipeline (in `endpoint.ex` for Phoenix apps).  See "Configuration Options" for available `opts`.
 
-   * `Plug.LoggerJSON, log: Logger.level`,
-   * `Plug.LoggerJSON, log: Logger.level, extra_attributes_fn: &MyPlug.extra_attributes/1` in your plug pipeline (in `endpoint.ex` for Phoenix apps),
+## Configuration Options
+
+The following options can be configured:
+
+*   `:log` - Logger level (`Logger.level`). Default: `:info`
+*   `:extra_attributes_fn` - Function to call to get extra attributes to log.  It should accept a `Plug.Conn` and return a map.  See "Extra Attributes". Default: `nil`
+*   `:filtered_keys` - Keys to filter from params and headers. Default: `[]`
+*   `:suppressed_keys` - Keys to suppress from the log. Default: `[]`
+*   `:include_debug_logging` - Whether to include debug logging (client_ip, client_version, and params).  If not set, the defaults are used.  See "Log Verbosity". Default: `nil`
+*   `:should_log_request_fn` - Function to determine if the request should be logged. See "Conditional Logging". Default: `nil`
+*   `:should_log_response_fn` - Function to determine if the response should be logged. See "Conditional Logging". Default: `nil`
+*   `:duration_unit` - The unit for duration logging. Can be `:nanoseconds`, `:microseconds`, or `:milliseconds`. Default: `:milliseconds`
+
+Example:
+
+```elixir
+plug Plug.LoggerJSON,
+  log: Logger.level,
+  extra_attributes_fn: &MyPlug.extra_attributes/1,
+  filtered_keys: ["password", "authorization"],
+  suppressed_keys: ["api_version", "log_type"],
+  include_debug_logging: true,
+  should_log_request_fn: &MyPlug.should_log_request/1,
+  should_log_response_fn: &MyPlug.should_log_response/1,
+  duration_unit: :milliseconds
+```
+
+## Log Format
+
+The log entries are in JSON format and include the following fields:
+
+```json
+{
+  "api_version":     "N/A",
+  "client_ip":       "23.235.46.37",
+  "client_version":  "ios/1.6.7",
+  "date_time":       "2016-05-31T18:00:13Z",
+  "duration":        4.670,
+  "handler":         "fronts#index",
+  "log_type":        "http",
+  "method":          "POST",
+  "params":          {
+    "user": "jkelly",
+    "password": "[FILTERED]"
+  },
+  "path":            "/",
+  "phase":           "request",
+  "request_id":      "d90jcl66vp09r8tke3utjsd1pjrg4ln8",
+  "status":          "200"
+}
+```
+
+The `phase` field indicates whether the log entry represents a request or response:
+* `"request"` - Log entry for the initial request
+* `"response"` - Log entry for the final response
+
+The `duration` field can be configured to use different units:
+* `:nanoseconds` - Returns an integer value (e.g., `4670123`)
+* `:microseconds` - Returns an integer value (e.g., `4670`)
+* `:milliseconds` - Returns a float value rounded to 3 decimal places (e.g., `4.670`)
 
 ## Recommended Setup
 
@@ -169,6 +227,75 @@ Example:
 plug Plug.LoggerJSON,
   log: Logger.level,
   include_debug_logging: true
+```
+
+## Conditional Logging
+
+You can control whether requests and responses should be logged by providing separate functions for each phase:
+
+```elixir
+defmodule MyApp.Plugs do
+  def should_log_request(conn) do
+    # Only log requests for specific paths
+    conn.request_path in ["/api", "/v1"]
+  end
+
+  def should_log_response(conn) do
+    # Log all responses except health checks
+    conn.request_path not in ["/health", "/metrics"]
+  end
+end
+
+plug Plug.LoggerJSON,
+  log: :debug,
+  should_log_request_fn: &MyApp.Plugs.should_log_request/1,
+  should_log_response_fn: &MyApp.Plugs.should_log_response/1
+```
+
+The functions have access to the complete connection struct, including request information (method, path, headers, params) and response information (status, response headers) after the request has been processed.
+
+You can also use anonymous functions for simple cases:
+
+```elixir
+plug Plug.LoggerJSON,
+  log: :debug,
+  should_log_request_fn: &(&1.request_path in ["/api", "/v1"]),
+  should_log_response_fn: &(&1.request_path not in ["/health", "/metrics"])
+```
+
+Or share common logic between both functions:
+
+```elixir
+defp should_log_path?(conn, allowed_paths) do
+  conn.request_path in allowed_paths
+end
+
+def should_log_request(conn), do: should_log_path?(conn, ["/api", "/v1"])
+def should_log_response(conn), do: should_log_path?(conn, ["/api", "/v1", "/health"])
+```
+
+## Duration Units
+
+You can customize the unit used for duration logging by setting the `:duration_unit` option:
+
+```elixir
+# Log duration in nanoseconds (as integer)
+plug Plug.LoggerJSON, duration_unit: :nanoseconds
+
+// nanoseconds
+{"duration": 4670123, ...}
+
+# Log duration in microseconds (as integer)
+plug Plug.LoggerJSON, duration_unit: :microseconds
+
+// microseconds  
+{"duration": 4670, ...}
+
+# Log duration in milliseconds (as float, rounded to 3 decimal places) - default
+plug Plug.LoggerJSON, duration_unit: :milliseconds
+
+// milliseconds
+{"duration": 4.67, ...}
 ```
 
 ## Contributing
